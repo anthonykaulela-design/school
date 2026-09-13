@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const http = http = require('http');
+const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 
@@ -14,12 +14,14 @@ const wss = new WebSocket.Server({ server });
 // Self-contained Local Broker Database & Accounts
 const mockDatabase = {
     accounts: new Map([
-        ["1001001", { loginId: "1001001", password: "password123", broker: "Pepperstone MT5 Live", balance: 25000.00, equity: 25000.00, margin: 0.00, currency: "USD" }],
-        ["1001002", { loginId: "1001002", password: "password123", broker: "IC Markets MT5 Demo", balance: 10000.00, equity: 10000.00, margin: 0.00, currency: "USD" }]
+        ["1001001", { loginId: "1001001", password: "password123", broker: "IC Markets - Live Server 01", type: "Live", balance: 25000.00, equity: 25000.00, margin: 0.00, currency: "USD" }],
+        ["2002002", { loginId: "2002002", password: "password123", broker: "IC Markets - Demo Server", type: "Demo", balance: 10000.00, equity: 10000.00, margin: 0.00, currency: "USD" }],
+        ["1003001", { loginId: "1003001", password: "password123", broker: "Pepperstone Group - Live 03", type: "Live", balance: 50000.00, equity: 50000.00, margin: 0.00, currency: "USD" }],
+        ["2003002", { loginId: "2003002", password: "password123", broker: "Pepperstone Group - Demo", type: "Demo", balance: 10000.00, equity: 10000.00, margin: 0.00, currency: "USD" }]
     ]),
-    sessions: new Map(), // sessionToken -> account object
-    positions: new Map(), // sessionToken -> array of open positions
-    history: new Map()   // sessionToken -> array of closed trades
+    sessions: new Map(),
+    positions: new Map(),
+    history: new Map()
 };
 
 const symbols = {
@@ -46,7 +48,7 @@ function isMarketOpen(symbolKey) {
     return true;
 }
 
-// Real-time Tick & Equity Engine
+// Tick & Equity Engine
 setInterval(() => {
     for (let sym in symbols) {
         if (isMarketOpen(sym)) {
@@ -57,12 +59,9 @@ setInterval(() => {
             const fluctuation = (Math.random() - 0.5) * pipScale;
             symbols[sym].bid = parseFloat((symbols[sym].bid + fluctuation).toFixed(sym.includes('JPY') ? 2 : (sym.includes('BTC') ? 1 : 5)));
             symbols[sym].ask = parseFloat((symbols[sym].bid + (symbols[sym].spread * (sym.includes('JPY') ? 0.01 : 0.0001))).toFixed(sym.includes('JPY') ? 2 : (sym.includes('BTC') ? 1 : 5)));
-            if (symbols[sym].bid > symbols[sym].high) symbols[sym].high = symbols[sym].bid;
-            if (symbols[sym].bid < symbols[sym].low) symbols[sym].low = symbols[sym].bid;
         }
     }
 
-    // Recalculate open positions PnL and equity for all active sessions
     mockDatabase.sessions.forEach((account, token) => {
         const positions = mockDatabase.positions.get(token) || [];
         let totalFloatingPnL = 0;
@@ -74,7 +73,6 @@ setInterval(() => {
             const currentPrice = pos.type === 'BUY' ? currentSym.bid : currentSym.ask;
             const diff = pos.type === 'BUY' ? (currentPrice - pos.openPrice) : (pos.openPrice - currentPrice);
             
-            // Standard lot calculation approximation
             let multiplier = 100000;
             if (pos.symbol.includes('JPY')) multiplier = 1000;
             if (pos.symbol === 'XAUUSD') multiplier = 100;
@@ -82,7 +80,7 @@ setInterval(() => {
 
             pos.profit = parseFloat((diff * pos.volume * multiplier).toFixed(2));
             totalFloatingPnL += pos.profit;
-            totalMargin += (pos.volume * 1000) / 20; // 1:50 leverage margin model
+            totalMargin += (pos.volume * 1000) / 20;
         });
 
         account.equity = parseFloat((account.balance + totalFloatingPnL).toFixed(2));
@@ -90,44 +88,44 @@ setInterval(() => {
         account.freeMargin = parseFloat((account.equity - account.margin).toFixed(2));
     });
 
-    const broadcastPayload = JSON.stringify({ 
-        type: 'MARKET_TICK', 
-        symbols,
-        marketOpen: isMarketOpen('EURUSD')
-    });
-
+    const broadcastPayload = JSON.stringify({ type: 'MARKET_TICK', symbols });
     wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(broadcastPayload);
-        }
+        if (client.readyState === WebSocket.OPEN) client.send(broadcastPayload);
     });
 }, 1000);
 
-// API Endpoints
+// API Endpoints: Comprehensive MT5 Broker & Server Listing
 app.get('/api/brokers', (req, res) => {
     res.json({
         brokers: [
-            { id: 'pepperstone-live', name: 'Pepperstone Group Ltd (Live)', accountType: 'live', serverType: 'MT5' },
-            { id: 'icmarkets-demo', name: 'IC Markets Global (Demo)', accountType: 'demo', serverType: 'MT5' },
-            { id: 'xm-live', name: 'XM Global Limited (Live)', accountType: 'live', serverType: 'MT5' },
-            { id: 'exness-live', name: 'Exness Technology Ltd (Live)', accountType: 'live', serverType: 'MT5' }
+            { id: 'icmarkets-live', name: 'IC Markets (Global) - Live Server 01', type: 'Live', group: 'IC Markets', ping: '14 ms' },
+            { id: 'icmarkets-demo', name: 'IC Markets (Global) - Demo Server', type: 'Demo', group: 'IC Markets', ping: '15 ms' },
+            { id: 'pepperstone-live', name: 'Pepperstone Group - Live Server 03', type: 'Live', group: 'Pepperstone', ping: '22 ms' },
+            { id: 'pepperstone-demo', name: 'Pepperstone Group - Demo Server', type: 'Demo', group: 'Pepperstone', ping: '20 ms' },
+            { id: 'exness-real', name: 'Exness Technologies - Real Server 12', type: 'Live', group: 'Exness', ping: '18 ms' },
+            { id: 'exness-trial', name: 'Exness Technologies - Trial / Demo', type: 'Demo', group: 'Exness', ping: '19 ms' },
+            { id: 'xm-real', name: 'XM Global Limited - Real 01', type: 'Live', group: 'XM Global', ping: '35 ms' },
+            { id: 'xm-demo', name: 'XM Global Limited - Demo', type: 'Demo', group: 'XM Global', ping: '33 ms' },
+            { id: 'fxtm-live', name: 'FXTM Forex Time - Live Server', type: 'Live', group: 'FXTM', ping: '28 ms' },
+            { id: 'fxtm-demo', name: 'FXTM Forex Time - Demo Server', type: 'Demo', group: 'FXTM', ping: '27 ms' }
         ]
     });
 });
 
 app.post('/api/auth/broker-login', (req, res) => {
-    const { brokerId, loginId, password } = req.body;
+    const { serverId, loginId, password } = req.body;
     
     if (!loginId || !password) {
         return res.status(400).json({ success: false, message: 'Login ID and Password are required.' });
     }
 
-    // Check or auto-provision account in local database
     let account = mockDatabase.accounts.get(loginId);
     if (!account) {
+        // Auto-provision new account for demo/real simulation
         account = {
             loginId,
-            broker: brokerId,
+            broker: serverId,
+            type: serverId.includes('demo') || serverId.includes('trial') ? 'Demo' : 'Live',
             balance: 10000.00,
             equity: 10000.00,
             margin: 0.00,
@@ -136,19 +134,15 @@ app.post('/api/auth/broker-login', (req, res) => {
         mockDatabase.accounts.set(loginId, account);
     }
 
-    const sessionToken = `mt5_token_${Math.random().toString(36.substring(2))}`;
+    const sessionToken = `mt5_token_${Math.random().toString(36).substring(2)}`;
     mockDatabase.sessions.set(sessionToken, account);
     if (!mockDatabase.positions.has(sessionToken)) mockDatabase.positions.set(sessionToken, []);
     if (!mockDatabase.history.has(sessionToken)) mockDatabase.history.set(sessionToken, []);
 
-    return res.json({
-        success: true,
-        sessionToken,
-        account
-    });
+    return res.json({ success: true, sessionToken, account });
 });
 
-// WebSocket Handler for Real-Time Terminal Actions
+// WebSocket Handler
 wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         try {
@@ -156,33 +150,22 @@ wss.on('connection', (ws) => {
             const sessionToken = data.sessionToken || ws.sessionToken;
             const account = mockDatabase.sessions.get(sessionToken);
 
-            if (!account && data.action !== 'SUBSCRIBE_ACCOUNT') {
-                ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized session.' }));
-                return;
-            }
+            if (!account && data.action !== 'SUBSCRIBE_ACCOUNT') return;
 
             if (data.action === 'SUBSCRIBE_ACCOUNT') {
                 ws.sessionToken = data.sessionToken;
-                const acc = mockDatabase.sessions.get(data.sessionToken);
-                const positions = mockDatabase.positions.get(data.sessionToken) || [];
-                const history = mockDatabase.history.get(data.sessionToken) || [];
-
                 ws.send(JSON.stringify({
                     type: 'INIT_STATE',
-                    account: acc,
-                    positions,
-                    history,
-                    symbols,
-                    marketOpen: isMarketOpen('EURUSD')
+                    account,
+                    positions: mockDatabase.positions.get(data.sessionToken) || [],
+                    history: mockDatabase.history.get(data.sessionToken) || [],
+                    symbols
                 }));
             }
 
             if (data.action === 'PLACE_ORDER') {
                 const { symbol, type, volume } = data;
-                if (!isMarketOpen(symbol)) {
-                    ws.send(JSON.stringify({ type: 'ORDER_REJECTED', message: `Market closed for ${symbol}.` }));
-                    return;
-                }
+                if (!isMarketOpen(symbol)) return;
 
                 const symData = symbols[symbol];
                 const executionPrice = type === 'BUY' ? symData.ask : symData.bid;
@@ -233,12 +216,12 @@ wss.on('connection', (ws) => {
                 }
             }
         } catch (err) {
-            console.error('Socket error:', err);
+            console.error(err);
         }
     });
 });
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-    console.log(`MetaTrader 5 Native Custom Engine v1.00 running on port ${PORT}`);
+    console.log(`MT5 Custom Engine with Broker/Account Switcher running on port ${PORT}`);
 });
