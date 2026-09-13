@@ -10,15 +10,21 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Simulated global broker directory (Matches MT5 broker server search)
+// Comprehensive global broker directory mimicking MetaTrader's server database
 const globalBrokers = [
     { id: 'pepperstone-live', name: 'Pepperstone Group Ltd', serverType: 'MT5-Live', host: 'pepperstone.live.com:443' },
-    { id: 'icmarkets-server', name: 'International Capital Markets', serverType: 'MT5-Live', host: 'icmarkets.live.com:443' },
+    { id: 'icmarkets-server', name: 'International Capital Markets (IC Markets)', serverType: 'MT5-Live', host: 'icmarkets.live.com:443' },
     { id: 'xm-global', name: 'XM Global Limited', serverType: 'MT5-Real', host: 'xmglobal.live.com:443' },
-    { id: 'custom-broker', name: 'Custom / Private Broker Server', serverType: 'Custom-FIX', host: 'localhost:443' }
+    { id: 'exness-real', name: 'Exness Technology Ltd', serverType: 'MT5-Real', host: 'exness.real.com:443' },
+    { id: 'deriv-server', name: 'Deriv (SVG) LLC', serverType: 'MT5-Server', host: 'deriv.server.com:443' },
+    { id: 'FBS-real', name: 'FBS Markets Inc', serverType: 'MT5-Real', host: 'fbs.real.com:443' },
+    { id: 'octafx-live', name: 'Octa Markets Incorporated', serverType: 'MT5-Live', host: 'octafx.live.com:443' },
+    { id: 'alpari-core', name: 'Alpari Com Limited', serverType: 'MT5-ECN', host: 'alpari.ecn.com:443' },
+    { id: 'roboforex-pro', name: 'RoboForex Ltd', serverType: 'MT5-Pro', host: 'roboforex.pro.com:443' },
+    { id: 'tickmill-uk', name: 'Tickmill UK Ltd', serverType: 'MT5-Live', host: 'tickmill.live.com:443' },
+    { id: 'custom-broker', name: 'Add Custom / Private Broker Server', serverType: 'Custom-FIX', host: 'localhost:443' }
 ];
 
-// Active user sessions mapped by connection token
 const activeSessions = new Map();
 
 const symbols = {
@@ -28,7 +34,6 @@ const symbols = {
     "XAUUSD": { bid: 2320.50, ask: 2320.90, spread: 0.40 }
 };
 
-// Global Market Feed Broadcast
 setInterval(() => {
     for (let sym in symbols) {
         const fluctuation = (Math.random() - 0.5) * (sym === "USDJPY" ? 0.05 : 0.0004);
@@ -44,30 +49,27 @@ setInterval(() => {
     });
 }, 1000);
 
-// REST endpoint to search or fetch all global brokers
 app.get('/api/brokers', (req, res) => {
     res.json({ brokers: globalBrokers });
 });
 
-// Authentication endpoint simulating broker login verification
 app.post('/api/auth/broker-login', (req, res) => {
-    const { brokerId, loginId, password, serverHost } = req.body;
+    const { brokerId, loginId, password, customHost } = req.body;
     
     if (!loginId || !password) {
         return res.status(400).json({ success: false, message: 'Login ID and Password are required.' });
     }
 
-    // In production, validate credentials against the broker API or MetaAPI gateway here.
-    const sessionToken = `token_${Math.random().toString(36.substring(2))}`;
+    const sessionToken = `token_${Math.random().toString(36).substring(2)}`;
     
     const accountData = {
         loginId,
         brokerId: brokerId || 'custom-broker',
-        serverHost: serverHost || 'Direct Connection',
-        balance: 25000.00,
-        equity: 25000.00,
+        serverHost: customHost || 'Global Trade Gateway',
+        balance: 50000.00,
+        equity: 50000.00,
         margin: 0.00,
-        freeMargin: 25000.00,
+        freeMargin: 50000.00,
         leverage: 500,
         currency: 'USD'
     };
@@ -81,7 +83,6 @@ app.post('/api/auth/broker-login', (req, res) => {
     });
 });
 
-// WebSocket connection handling for live trading terminals
 wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         try {
@@ -125,5 +126,5 @@ wss.on('connection', (ws) => {
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-    console.log(`Universal Broker Trading Engine running on port ${PORT}`);
+    console.log(`L3 Markets trading engine running on port ${PORT}`);
 });
