@@ -12,12 +12,11 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Initialize Apify client with your token
 const apify = new ApifyClient({
     token: process.env.APIFY_TOKEN
 });
 
-const globalBrokers = [
+const baseBrokers = [
     { id: 'pepperstone', name: 'Pepperstone Group Ltd', serverType: 'MT5' },
     { id: 'icmarkets', name: 'International Capital Markets (IC Markets)', serverType: 'MT5' },
     { id: 'xm', name: 'XM Global Limited', serverType: 'MT5' },
@@ -29,6 +28,25 @@ const globalBrokers = [
     { id: 'roboforex', name: 'RoboForex Ltd', serverType: 'MT5' },
     { id: 'tickmill', name: 'Tickmill UK Ltd', serverType: 'MT5' }
 ];
+
+// Generate explicit Live and Demo broker choices for selection
+const globalBrokers = [];
+baseBrokers.forEach(b => {
+    globalBrokers.push({
+        id: `${b.id}-live`,
+        name: `${b.name} (Live)`,
+        baseId: b.id,
+        accountType: 'live',
+        serverType: b.serverType
+    });
+    globalBrokers.push({
+        id: `${b.id}-demo`,
+        name: `${b.name} (Demo)`,
+        baseId: b.id,
+        accountType: 'demo',
+        serverType: b.serverType
+    });
+});
 
 const activeSessions = new Map();
 
@@ -54,20 +72,19 @@ const symbols = {
 function isMarketOpen(symbolKey) {
     const sym = symbols[symbolKey];
     if (!sym) return false;
-    if (sym.type === 'crypto') return true; // Crypto trades 24/7
+    if (sym.type === 'crypto') return true;
 
     const now = new Date();
     const day = now.getUTCDay();
     const hour = now.getUTCHours();
 
-    if (day === 6) return false; // Saturday closed
-    if (day === 0 && hour < 21) return false; // Sunday before open
-    if (day === 5 && hour >= 21) return false; // Friday after close
+    if (day === 6) return false;
+    if (day === 0 && hour < 21) return false;
+    if (day === 5 && hour >= 21) return false;
 
     return true;
 }
 
-// Ticker prices update live
 setInterval(() => {
     for (let sym in symbols) {
         if (isMarketOpen(sym)) {
@@ -99,23 +116,27 @@ app.get('/api/brokers', (req, res) => {
 });
 
 app.post('/api/auth/broker-login', async (req, res) => {
-    const { brokerId, loginId, password, accountType } = req.body;
+    const { brokerId, loginId, password } = req.body;
     
     if (!loginId || !password) {
         return res.status(400).json({ success: false, message: 'Login ID and Password are required.' });
     }
 
-    let realBalance = 10000.00;
-    let realEquity = 10000.00;
+    const selectedBroker = globalBrokers.find(b => b.id === brokerId) || globalBrokers[0];
+    const accountType = selectedBroker.accountType;
+    const baseBrokerId = selectedBroker.baseId;
+
+    let realBalance = accountType === 'demo' ? 50000.00 : 2500.00;
+    let realEquity = realBalance;
     let realMargin = 0.00;
 
-    // Fetch real account data from your Apify actor (hOfycUMuUpaFZvG7a)
     try {
         const run = await apify.actor("hOfycUMuUpaFZvG7a").call({
-            brokerId,
+            brokerId: baseBrokerId,
             loginId,
             password,
-            accountType // 'live' or 'demo'
+            accountType,
+            apifyUserId: 'w8qrLofA75HvkHcAO'
         });
         
         const { items } = await apify.dataset(run.defaultDatasetId).listItems();
@@ -125,18 +146,15 @@ app.post('/api/auth/broker-login', async (req, res) => {
             realMargin = parseFloat(items[0].margin || 0);
         }
     } catch (apifyErr) {
-        console.log("Apify live fetch fallback active:", apifyErr.message);
-        // Fallback realistic values based on account type if actor call is unconfigured or offline
-        realBalance = accountType === 'demo' ? 50000.00 : 2500.00;
-        realEquity = realBalance;
+        console.log("Apify fetch fallback active:", apifyErr.message);
     }
 
     const sessionToken = `token_${Math.random().toString(36).substring(2)}`;
     
     const accountData = {
         loginId,
-        brokerId,
-        accountType: accountType || 'live',
+        brokerId: baseBrokerId,
+        accountType,
         balance: realBalance,
         equity: realEquity,
         margin: realMargin,
