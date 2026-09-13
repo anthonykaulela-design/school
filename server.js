@@ -1,5 +1,5 @@
 const express = require('express');
-const http = http = require('http');
+const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 
@@ -10,19 +10,16 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Expanded platform data store with mock broker accounts & credentials
-const accounts = {
-    "ACC1001": { 
-        id: "ACC1001", 
-        password: "password123", 
-        broker: "MetaTrader Demo LLC", 
-        server: "MetaQuotes-Demo", 
-        balance: 10000.00, 
-        equity: 10000.00, 
-        margin: 0, 
-        leverage: 100 
-    }
-};
+// Simulated global broker directory (Matches MT5 broker server search)
+const globalBrokers = [
+    { id: 'pepperstone-live', name: 'Pepperstone Group Ltd', serverType: 'MT5-Live', host: 'pepperstone.live.com:443' },
+    { id: 'icmarkets-server', name: 'International Capital Markets', serverType: 'MT5-Live', host: 'icmarkets.live.com:443' },
+    { id: 'xm-global', name: 'XM Global Limited', serverType: 'MT5-Real', host: 'xmglobal.live.com:443' },
+    { id: 'custom-broker', name: 'Custom / Private Broker Server', serverType: 'Custom-FIX', host: 'localhost:443' }
+];
+
+// Active user sessions mapped by connection token
+const activeSessions = new Map();
 
 const symbols = {
     "EURUSD": { bid: 1.0850, ask: 1.0852, spread: 0.0002 },
@@ -31,37 +28,7 @@ const symbols = {
     "XAUUSD": { bid: 2320.50, ask: 2320.90, spread: 0.40 }
 };
 
-const openPositions = [];
-const tradeHistory = [];
-let orderIdCounter = 1;
-
-// REST Login Authentication Endpoint
-app.post('/api/login', (req, res) => {
-    const { broker, server: srv, accountId, password } = req.body;
-    const account = accounts[accountId];
-
-    if (!account) {
-        return res.status(401).json({ success: false, message: 'Account not found.' });
-    }
-
-    if (account.password !== password) {
-        return res.status(401).json({ success: false, message: 'Invalid password.' });
-    }
-
-    res.json({ 
-        success: true, 
-        account: {
-            id: account.id,
-            broker: account.broker,
-            server: account.server,
-            balance: account.balance,
-            equity: account.equity,
-            leverage: account.leverage
-        } 
-    });
-});
-
-// Real-time market tick generator & margin monitoring
+// Global Market Feed Broadcast
 setInterval(() => {
     for (let sym in symbols) {
         const fluctuation = (Math.random() - 0.5) * (sym === "USDJPY" ? 0.05 : 0.0004);
@@ -69,89 +36,94 @@ setInterval(() => {
         symbols[sym].ask = parseFloat((symbols[sym].bid + symbols[sym].spread).toFixed(sym === "USDJPY" ? 2 : 5));
     }
 
-    for (let accId in accounts) {
-        let floatingPnL = 0;
-        openPositions.filter(p => p.accountId === accId).forEach(pos => {
-            const currentPrice = pos.type === 'BUY' ? symbols[pos.symbol].bid : symbols[pos.symbol].ask;
-            const priceDiff = pos.type === 'BUY' ? (currentPrice - pos.openPrice) : (pos.openPrice - currentPrice);
-            floatingPnL += priceDiff * pos.volume * 100000;
-        });
-        accounts[accId].equity = parseFloat((accounts[accId].balance + floatingPnL).toFixed(2));
-    }
-
-    const payload = JSON.stringify({
-        type: 'MARKET_UPDATE',
-        symbols,
-        accounts,
-        openPositions
-    });
-
+    const broadcastPayload = JSON.stringify({ type: 'MARKET_TICK', symbols });
     wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
-            client.send(payload);
+            client.send(broadcastPayload);
         }
     });
 }, 1000);
 
+// REST endpoint to search or fetch all global brokers
+app.get('/api/brokers', (req, res) => {
+    res.json({ brokers: globalBrokers });
+});
+
+// Authentication endpoint simulating broker login verification
+app.post('/api/auth/broker-login', (req, res) => {
+    const { brokerId, loginId, password, serverHost } = req.body;
+    
+    if (!loginId || !password) {
+        return res.status(400).json({ success: false, message: 'Login ID and Password are required.' });
+    }
+
+    // In production, validate credentials against the broker API or MetaAPI gateway here.
+    const sessionToken = `token_${Math.random().toString(36.substring(2))}`;
+    
+    const accountData = {
+        loginId,
+        brokerId: brokerId || 'custom-broker',
+        serverHost: serverHost || 'Direct Connection',
+        balance: 25000.00,
+        equity: 25000.00,
+        margin: 0.00,
+        freeMargin: 25000.00,
+        leverage: 500,
+        currency: 'USD'
+    };
+
+    activeSessions.set(sessionToken, { account: accountData, positions: [] });
+
+    res.json({
+        success: true,
+        sessionToken,
+        account: accountData
+    });
+});
+
+// WebSocket connection handling for live trading terminals
 wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
 
-            if (data.action === 'PLACE_ORDER') {
-                const { accountId, symbol, type, volume, takeProfit, stopLoss } = data;
-                const account = accounts[accountId];
-                const symData = symbols[symbol];
-
-                if (!account || !symData) return;
-
-                const executionPrice = type === 'BUY' ? symData.ask : symData.bid;
-                const requiredMargin = (volume * 100000) / account.leverage;
-
-                if ((account.equity - account.margin) < requiredMargin) {
-                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Insufficient margin for order.' }));
+            if (data.action === 'SUBSCRIBE_ACCOUNT') {
+                const session = activeSessions.get(data.sessionToken);
+                if (!session) {
+                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized session.' }));
                     return;
                 }
+                ws.sessionToken = data.sessionToken;
+                ws.send(JSON.stringify({ type: 'INIT_STATE', account: session.account, positions: session.positions, symbols }));
+            }
 
+            if (data.action === 'PLACE_ORDER') {
+                const session = activeSessions.get(ws.sessionToken);
+                if (!session) return;
+
+                const { symbol, type, volume } = data;
+                const symData = symbols[symbol];
+                const executionPrice = type === 'BUY' ? symData.ask : symData.bid;
+                
                 const newPosition = {
-                    orderId: orderIdCounter++,
-                    accountId,
+                    orderId: Math.floor(100000 + Math.random() * 900000),
                     symbol,
                     type,
                     volume,
                     openPrice: executionPrice,
-                    takeProfit: takeProfit ? parseFloat(takeProfit) : 0,
-                    stopLoss: stopLoss ? parseFloat(stopLoss) : 0,
                     openTime: new Date().toISOString()
                 };
 
-                openPositions.push(newPosition);
-                account.margin += requiredMargin;
-            }
-
-            if (data.action === 'CLOSE_ORDER') {
-                const { orderId } = data;
-                const posIndex = openPositions.findIndex(p => p.orderId === orderId);
-                if (posIndex === -1) return;
-
-                const pos = openPositions[posIndex];
-                const account = accounts[pos.accountId];
-                const currentPrice = pos.type === 'BUY' ? symbols[pos.symbol].bid : symbols[pos.symbol].ask;
-                const priceDiff = pos.type === 'BUY' ? (currentPrice - pos.openPrice) : (pos.openPrice - currentPrice);
-                const profit = priceDiff * pos.volume * 100000;
-
-                account.balance += profit;
-                const freedMargin = (pos.volume * 100000) / account.leverage;
-                account.margin = Math.max(0, account.margin - freedMargin);
-
-                tradeHistory.push({ ...pos, closePrice: currentPrice, profit, closeTime: new Date().toISOString() });
-                openPositions.splice(posIndex, 1);
+                session.positions.push(newPosition);
+                ws.send(JSON.stringify({ type: 'ORDER_EXECUTED', position: newPosition, account: session.account }));
             }
         } catch (err) {
-            console.error(err);
+            console.error('Socket error:', err);
         }
     });
 });
 
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => console.log(`Broker backend running on port ${PORT}`));
+server.listen(PORT, () => {
+    console.log(`Universal Broker Trading Engine running on port ${PORT}`);
+});
