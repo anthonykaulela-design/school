@@ -1,5 +1,5 @@
 const express = require('express');
-const http = require('http');
+const http = http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 
@@ -10,9 +10,18 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// In-memory data store for platform accounts, quotes, and active positions
+// Expanded platform data store with mock broker accounts & credentials
 const accounts = {
-    "ACC1001": { id: "ACC1001", balance: 10000.00, equity: 10000.00, margin: 0, leverage: 100 }
+    "ACC1001": { 
+        id: "ACC1001", 
+        password: "password123", 
+        broker: "MetaTrader Demo LLC", 
+        server: "MetaQuotes-Demo", 
+        balance: 10000.00, 
+        equity: 10000.00, 
+        margin: 0, 
+        leverage: 100 
+    }
 };
 
 const symbols = {
@@ -23,9 +32,36 @@ const symbols = {
 };
 
 const openPositions = [];
+const tradeHistory = [];
 let orderIdCounter = 1;
 
-// Real-time price tick generator & broadcaster
+// REST Login Authentication Endpoint
+app.post('/api/login', (req, res) => {
+    const { broker, server: srv, accountId, password } = req.body;
+    const account = accounts[accountId];
+
+    if (!account) {
+        return res.status(401).json({ success: false, message: 'Account not found.' });
+    }
+
+    if (account.password !== password) {
+        return res.status(401).json({ success: false, message: 'Invalid password.' });
+    }
+
+    res.json({ 
+        success: true, 
+        account: {
+            id: account.id,
+            broker: account.broker,
+            server: account.server,
+            balance: account.balance,
+            equity: account.equity,
+            leverage: account.leverage
+        } 
+    });
+});
+
+// Real-time market tick generator & margin monitoring
 setInterval(() => {
     for (let sym in symbols) {
         const fluctuation = (Math.random() - 0.5) * (sym === "USDJPY" ? 0.05 : 0.0004);
@@ -33,7 +69,6 @@ setInterval(() => {
         symbols[sym].ask = parseFloat((symbols[sym].bid + symbols[sym].spread).toFixed(sym === "USDJPY" ? 2 : 5));
     }
 
-    // Recalculate floating profit/loss and equity for accounts
     for (let accId in accounts) {
         let floatingPnL = 0;
         openPositions.filter(p => p.accountId === accId).forEach(pos => {
@@ -44,7 +79,7 @@ setInterval(() => {
         accounts[accId].equity = parseFloat((accounts[accId].balance + floatingPnL).toFixed(2));
     }
 
-    const marketTickPayload = JSON.stringify({
+    const payload = JSON.stringify({
         type: 'MARKET_UPDATE',
         symbols,
         accounts,
@@ -53,43 +88,28 @@ setInterval(() => {
 
     wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
-            client.send(marketTickPayload);
+            client.send(payload);
         }
     });
 }, 1000);
 
-// WebSocket connection handler for terminal clients
 wss.on('connection', (ws) => {
-    console.log('New trading terminal connected');
-
-    // Send initial snapshot state
-    ws.send(JSON.stringify({
-        type: 'INIT_STATE',
-        accounts,
-        symbols,
-        openPositions
-    }));
-
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
 
             if (data.action === 'PLACE_ORDER') {
-                const { accountId, symbol, type, volume } = data;
+                const { accountId, symbol, type, volume, takeProfit, stopLoss } = data;
                 const account = accounts[accountId];
                 const symData = symbols[symbol];
 
-                if (!account || !symData) {
-                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Invalid account ID or asset symbol.' }));
-                    return;
-                }
+                if (!account || !symData) return;
 
                 const executionPrice = type === 'BUY' ? symData.ask : symData.bid;
-                const contractSize = 100000;
-                const requiredMargin = (volume * contractSize) / account.leverage;
+                const requiredMargin = (volume * 100000) / account.leverage;
 
                 if ((account.equity - account.margin) < requiredMargin) {
-                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Order rejected: Insufficient free margin.' }));
+                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Insufficient margin for order.' }));
                     return;
                 }
 
@@ -100,68 +120,38 @@ wss.on('connection', (ws) => {
                     type,
                     volume,
                     openPrice: executionPrice,
+                    takeProfit: takeProfit ? parseFloat(takeProfit) : 0,
+                    stopLoss: stopLoss ? parseFloat(stopLoss) : 0,
                     openTime: new Date().toISOString()
                 };
 
                 openPositions.push(newPosition);
                 account.margin += requiredMargin;
-
-                ws.send(JSON.stringify({
-                    type: 'ORDER_SUCCESS',
-                    position: newPosition,
-                    account
-                }));
             }
 
             if (data.action === 'CLOSE_ORDER') {
                 const { orderId } = data;
                 const posIndex = openPositions.findIndex(p => p.orderId === orderId);
-
-                if (posIndex === -1) {
-                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Position not found.' }));
-                    return;
-                }
+                if (posIndex === -1) return;
 
                 const pos = openPositions[posIndex];
                 const account = accounts[pos.accountId];
                 const currentPrice = pos.type === 'BUY' ? symbols[pos.symbol].bid : symbols[pos.symbol].ask;
                 const priceDiff = pos.type === 'BUY' ? (currentPrice - pos.openPrice) : (pos.openPrice - currentPrice);
-                const profitLoss = priceDiff * pos.volume * 100000;
+                const profit = priceDiff * pos.volume * 100000;
 
-                account.balance += profitLoss;
+                account.balance += profit;
                 const freedMargin = (pos.volume * 100000) / account.leverage;
                 account.margin = Math.max(0, account.margin - freedMargin);
 
+                tradeHistory.push({ ...pos, closePrice: currentPrice, profit, closeTime: new Date().toISOString() });
                 openPositions.splice(posIndex, 1);
-
-                ws.send(JSON.stringify({
-                    type: 'CLOSE_SUCCESS',
-                    orderId,
-                    profit: profitLoss,
-                    account
-                }));
             }
         } catch (err) {
-            console.error('Failed to parse WebSocket message:', err);
+            console.error(err);
         }
-    });
-
-    ws.on('close', () => {
-        console.log('Trading terminal disconnected');
-    });
-});
-
-// REST endpoint for account retrieval & historical records
-app.get('/api/account/:id', (req, res) => {
-    const account = accounts[req.params.id];
-    if (!account) return res.status(404).json({ error: 'Account not found' });
-    res.json({
-        account,
-        positions: openPositions.filter(p => p.accountId === req.params.id)
     });
 });
 
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => {
-    console.log(`Trading platform backend engine listening on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Broker backend running on port ${PORT}`));
