@@ -1,9 +1,8 @@
 require('dotenv').config();
 const express = require('express');
-const http = require('http');
+const http = http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
-const { ApifyClient } = require('apify-client');
 
 const app = express();
 app.use(express.json());
@@ -12,42 +11,16 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const apify = new ApifyClient({
-    token: process.env.APIFY_TOKEN
-});
-
-const baseBrokers = [
-    { id: 'pepperstone', name: 'Pepperstone Group Ltd', serverType: 'MT5' },
-    { id: 'icmarkets', name: 'International Capital Markets (IC Markets)', serverType: 'MT5' },
-    { id: 'xm', name: 'XM Global Limited', serverType: 'MT5' },
-    { id: 'exness', name: 'Exness Technology Ltd', serverType: 'MT5' },
-    { id: 'deriv', name: 'Deriv (SVG) LLC', serverType: 'MT5' },
-    { id: 'fbs', name: 'FBS Markets Inc', serverType: 'MT5' },
-    { id: 'octafx', name: 'Octa Markets Incorporated', serverType: 'MT5' },
-    { id: 'alpari', name: 'Alpari Com Limited', serverType: 'MT5' },
-    { id: 'roboforex', name: 'RoboForex Ltd', serverType: 'MT5' },
-    { id: 'tickmill', name: 'Tickmill UK Ltd', serverType: 'MT5' }
-];
-
-const globalBrokers = [];
-baseBrokers.forEach(b => {
-    globalBrokers.push({
-        id: `${b.id}-live`,
-        name: `${b.name} (Live)`,
-        baseId: b.id,
-        accountType: 'live',
-        serverType: b.serverType
-    });
-    globalBrokers.push({
-        id: `${b.id}-demo`,
-        name: `${b.name} (Demo)`,
-        baseId: b.id,
-        accountType: 'demo',
-        serverType: b.serverType
-    });
-});
-
-const activeSessions = new Map();
+// Self-contained Local Broker Database & Accounts
+const mockDatabase = {
+    accounts: new Map([
+        ["1001001", { loginId: "1001001", password: "password123", broker: "Pepperstone MT5 Live", balance: 25000.00, equity: 25000.00, margin: 0.00, currency: "USD" }],
+        ["1001002", { loginId: "1001002", password: "password123", broker: "IC Markets MT5 Demo", balance: 10000.00, equity: 10000.00, margin: 0.00, currency: "USD" }]
+    ]),
+    sessions: new Map(), // sessionToken -> account object
+    positions: new Map(), // sessionToken -> array of open positions
+    history: new Map()   // sessionToken -> array of closed trades
+};
 
 const symbols = {
     "EURUSD": { bid: 1.0850, ask: 1.0852, high: 1.0875, low: 1.0830, spread: 2, type: 'forex' },
@@ -73,6 +46,7 @@ function isMarketOpen(symbolKey) {
     return true;
 }
 
+// Real-time Tick & Equity Engine
 setInterval(() => {
     for (let sym in symbols) {
         if (isMarketOpen(sym)) {
@@ -88,6 +62,34 @@ setInterval(() => {
         }
     }
 
+    // Recalculate open positions PnL and equity for all active sessions
+    mockDatabase.sessions.forEach((account, token) => {
+        const positions = mockDatabase.positions.get(token) || [];
+        let totalFloatingPnL = 0;
+        let totalMargin = 0;
+
+        positions.forEach(pos => {
+            const currentSym = symbols[pos.symbol];
+            if (!currentSym) return;
+            const currentPrice = pos.type === 'BUY' ? currentSym.bid : currentSym.ask;
+            const diff = pos.type === 'BUY' ? (currentPrice - pos.openPrice) : (pos.openPrice - currentPrice);
+            
+            // Standard lot calculation approximation
+            let multiplier = 100000;
+            if (pos.symbol.includes('JPY')) multiplier = 1000;
+            if (pos.symbol === 'XAUUSD') multiplier = 100;
+            if (pos.symbol === 'BTCUSD') multiplier = 1;
+
+            pos.profit = parseFloat((diff * pos.volume * multiplier).toFixed(2));
+            totalFloatingPnL += pos.profit;
+            totalMargin += (pos.volume * 1000) / 20; // 1:50 leverage margin model
+        });
+
+        account.equity = parseFloat((account.balance + totalFloatingPnL).toFixed(2));
+        account.margin = parseFloat(totalMargin.toFixed(2));
+        account.freeMargin = parseFloat((account.equity - account.margin).toFixed(2));
+    });
+
     const broadcastPayload = JSON.stringify({ 
         type: 'MARKET_TICK', 
         symbols,
@@ -101,96 +103,84 @@ setInterval(() => {
     });
 }, 1000);
 
+// API Endpoints
 app.get('/api/brokers', (req, res) => {
-    res.json({ brokers: globalBrokers });
+    res.json({
+        brokers: [
+            { id: 'pepperstone-live', name: 'Pepperstone Group Ltd (Live)', accountType: 'live', serverType: 'MT5' },
+            { id: 'icmarkets-demo', name: 'IC Markets Global (Demo)', accountType: 'demo', serverType: 'MT5' },
+            { id: 'xm-live', name: 'XM Global Limited (Live)', accountType: 'live', serverType: 'MT5' },
+            { id: 'exness-live', name: 'Exness Technology Ltd (Live)', accountType: 'live', serverType: 'MT5' }
+        ]
+    });
 });
 
-app.post('/api/auth/broker-login', async (req, res) => {
+app.post('/api/auth/broker-login', (req, res) => {
     const { brokerId, loginId, password } = req.body;
     
     if (!loginId || !password) {
         return res.status(400).json({ success: false, message: 'Login ID and Password are required.' });
     }
 
-    const selectedBroker = globalBrokers.find(b => b.id === brokerId) || globalBrokers[0];
-    const accountType = selectedBroker.accountType;
-    const baseBrokerId = selectedBroker.baseId;
-
-    try {
-        const run = await apify.actor("hOfycUMuUpaFZvG7a").call({
-            brokerId: baseBrokerId,
-            loginId: String(loginId),
-            password: String(password),
-            accountType,
-            apifyUserId: 'w8qrLofA75HvkHcAO'
-        });
-        
-        const { items } = await apify.dataset(run.defaultDatasetId).listItems();
-        
-        if (!items || items.length === 0) {
-            return res.status(401).json({ 
-                success: false, 
-                message: 'Failed to retrieve exact account records from broker database.' 
-            });
-        }
-
-        const record = items[0];
-        const balance = parseFloat(record.balance ?? record.accountBalance ?? 10000.00);
-        const equity = parseFloat(record.equity ?? record.accountEquity ?? balance);
-        const margin = parseFloat(record.margin ?? record.accountMargin ?? 0.00);
-
-        const sessionToken = `token_${Math.random().toString(36).substring(2)}`;
-        
-        const accountData = {
+    // Check or auto-provision account in local database
+    let account = mockDatabase.accounts.get(loginId);
+    if (!account) {
+        account = {
             loginId,
-            brokerId: baseBrokerId,
-            accountType,
-            balance,
-            equity,
-            margin,
-            freeMargin: equity - margin,
-            currency: record.currency || 'USD'
+            broker: brokerId,
+            balance: 10000.00,
+            equity: 10000.00,
+            margin: 0.00,
+            currency: 'USD'
         };
-
-        activeSessions.set(sessionToken, { account: accountData, positions: [], history: [] });
-
-        return res.json({ success: true, sessionToken, account: accountData });
-
-    } catch (err) {
-        console.error('Database connection error:', err.message);
-        return res.status(500).json({ success: false, message: `Broker auth error: ${err.message}` });
+        mockDatabase.accounts.set(loginId, account);
     }
+
+    const sessionToken = `mt5_token_${Math.random().toString(36.substring(2))}`;
+    mockDatabase.sessions.set(sessionToken, account);
+    if (!mockDatabase.positions.has(sessionToken)) mockDatabase.positions.set(sessionToken, []);
+    if (!mockDatabase.history.has(sessionToken)) mockDatabase.history.set(sessionToken, []);
+
+    return res.json({
+        success: true,
+        sessionToken,
+        account
+    });
 });
 
+// WebSocket Handler for Real-Time Terminal Actions
 wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
+            const sessionToken = data.sessionToken || ws.sessionToken;
+            const account = mockDatabase.sessions.get(sessionToken);
+
+            if (!account && data.action !== 'SUBSCRIBE_ACCOUNT') {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized session.' }));
+                return;
+            }
 
             if (data.action === 'SUBSCRIBE_ACCOUNT') {
-                const session = activeSessions.get(data.sessionToken);
-                if (!session) {
-                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized session.' }));
-                    return;
-                }
                 ws.sessionToken = data.sessionToken;
-                ws.send(JSON.stringify({ 
-                    type: 'INIT_STATE', 
-                    account: session.account, 
-                    positions: session.positions,
-                    history: session.history,
+                const acc = mockDatabase.sessions.get(data.sessionToken);
+                const positions = mockDatabase.positions.get(data.sessionToken) || [];
+                const history = mockDatabase.history.get(data.sessionToken) || [];
+
+                ws.send(JSON.stringify({
+                    type: 'INIT_STATE',
+                    account: acc,
+                    positions,
+                    history,
                     symbols,
                     marketOpen: isMarketOpen('EURUSD')
                 }));
             }
 
             if (data.action === 'PLACE_ORDER') {
-                const session = activeSessions.get(ws.sessionToken);
-                if (!session) return;
-
-                const { symbol, type, volume, sl, tp } = data;
+                const { symbol, type, volume } = data;
                 if (!isMarketOpen(symbol)) {
-                    ws.send(JSON.stringify({ type: 'ORDER_REJECTED', message: `Market is closed for ${symbol}.` }));
+                    ws.send(JSON.stringify({ type: 'ORDER_REJECTED', message: `Market closed for ${symbol}.` }));
                     return;
                 }
 
@@ -203,40 +193,52 @@ wss.on('connection', (ws) => {
                     type,
                     volume,
                     openPrice: executionPrice,
-                    sl: sl || 0,
-                    tp: tp || 0,
                     profit: 0.00,
                     openTime: new Date().toISOString()
                 };
 
-                session.positions.push(newPosition);
-                ws.send(JSON.stringify({ type: 'ORDER_EXECUTED', position: newPosition, account: session.account, positions: session.positions }));
+                const positions = mockDatabase.positions.get(sessionToken);
+                positions.push(newPosition);
+
+                ws.send(JSON.stringify({
+                    type: 'ORDER_EXECUTED',
+                    account,
+                    positions,
+                    history: mockDatabase.history.get(sessionToken)
+                }));
             }
 
             if (data.action === 'CLOSE_ORDER') {
-                const session = activeSessions.get(ws.sessionToken);
-                if (!session) return;
-
-                const index = session.positions.findIndex(p => p.orderId === data.orderId);
+                const positions = mockDatabase.positions.get(sessionToken);
+                const index = positions.findIndex(p => p.orderId === data.orderId);
+                
                 if (index !== -1) {
-                    const closed = session.positions.splice(index, 1)[0];
+                    const closed = positions.splice(index, 1)[0];
                     closed.closeTime = new Date().toISOString();
                     closed.closePrice = symbols[closed.symbol].bid;
-                    closed.netProfit = (Math.random() * 20 - 10).toFixed(2);
-                    session.account.balance += parseFloat(closed.netProfit);
-                    session.account.equity = session.account.balance;
-                    session.history.push(closed);
+                    closed.netProfit = closed.profit;
 
-                    ws.send(JSON.stringify({ type: 'ORDER_CLOSED', orderId: data.orderId, account: session.account, positions: session.positions, history: session.history }));
+                    account.balance += closed.netProfit;
+                    account.equity = account.balance;
+
+                    const history = mockDatabase.history.get(sessionToken);
+                    history.push(closed);
+
+                    ws.send(JSON.stringify({
+                        type: 'ORDER_CLOSED',
+                        account,
+                        positions,
+                        history
+                    }));
                 }
             }
         } catch (err) {
-            console.error('Socket message error:', err);
+            console.error('Socket error:', err);
         }
     });
 });
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-    console.log(`L3 Markets MT5 Engine v1.00 running on port ${PORT}`);
+    console.log(`MetaTrader 5 Native Custom Engine v1.00 running on port ${PORT}`);
 });
