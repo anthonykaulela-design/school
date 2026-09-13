@@ -29,7 +29,6 @@ const baseBrokers = [
     { id: 'tickmill', name: 'Tickmill UK Ltd', serverType: 'MT5' }
 ];
 
-// Generate explicit Live and Demo broker choices for selection
 const globalBrokers = [];
 baseBrokers.forEach(b => {
     globalBrokers.push({
@@ -126,49 +125,57 @@ app.post('/api/auth/broker-login', async (req, res) => {
     const accountType = selectedBroker.accountType;
     const baseBrokerId = selectedBroker.baseId;
 
-    let realBalance = accountType === 'demo' ? 50000.00 : 2500.00;
-    let realEquity = realBalance;
-    let realMargin = 0.00;
-
     try {
         const run = await apify.actor("hOfycUMuUpaFZvG7a").call({
             brokerId: baseBrokerId,
-            loginId,
-            password,
+            loginId: String(loginId),
+            password: String(password),
             accountType,
             apifyUserId: 'w8qrLofA75HvkHcAO'
         });
         
         const { items } = await apify.dataset(run.defaultDatasetId).listItems();
-        if (items && items.length > 0 && items[0].balance) {
-            realBalance = parseFloat(items[0].balance);
-            realEquity = parseFloat(items[0].equity || items[0].balance);
-            realMargin = parseFloat(items[0].margin || 0);
+        
+        if (!items || items.length === 0) {
+            return res.status(401).json({ 
+                success: false, 
+                message: 'Failed to retrieve account data from broker database. Please check your login credentials.' 
+            });
         }
+
+        const accountRecord = items[0];
+        const realBalance = parseFloat(accountRecord.balance ?? accountRecord.accountBalance ?? 0);
+        const realEquity = parseFloat(accountRecord.equity ?? accountRecord.accountEquity ?? realBalance);
+        const realMargin = parseFloat(accountRecord.margin ?? accountRecord.accountMargin ?? 0);
+
+        const sessionToken = `token_${Math.random().toString(36).substring(2)}`;
+        
+        const accountData = {
+            loginId,
+            brokerId: baseBrokerId,
+            accountType,
+            balance: realBalance,
+            equity: realEquity,
+            margin: realMargin,
+            freeMargin: realEquity - realMargin,
+            currency: accountRecord.currency || 'USD'
+        };
+
+        activeSessions.set(sessionToken, { account: accountData, positions: [] });
+
+        return res.json({
+            success: true,
+            sessionToken,
+            account: accountData
+        });
+
     } catch (apifyErr) {
-        console.log("Apify fetch fallback active:", apifyErr.message);
+        console.error('Apify broker fetch error:', apifyErr.message);
+        return res.status(500).json({ 
+            success: false, 
+            message: `Broker connection error: ${apifyErr.message}` 
+        });
     }
-
-    const sessionToken = `token_${Math.random().toString(36).substring(2)}`;
-    
-    const accountData = {
-        loginId,
-        brokerId: baseBrokerId,
-        accountType,
-        balance: realBalance,
-        equity: realEquity,
-        margin: realMargin,
-        freeMargin: realEquity - realMargin,
-        currency: 'USD'
-    };
-
-    activeSessions.set(sessionToken, { account: accountData, positions: [] });
-
-    res.json({
-        success: true,
-        sessionToken,
-        account: accountData
-    });
 });
 
 wss.on('connection', (ws) => {
