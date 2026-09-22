@@ -1,19 +1,31 @@
+/**
+ * Dikgang tsa Sol Plaatjie - Production Server
+ * Framework: Express.js & MySQL/TiDB
+ */
+
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
 const path = require('path');
 
 const app = express();
+const PORT = process.env.PORT || 10000;
 
-// Increase JSON and urlencoded payload limits to 50mb to handle base64 image/video uploads
+// --- MIDDLEWARE CONFIGURATION ---
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cors());
 
+// Simple request logger for debugging
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
+
 // Serve static frontend files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Database Connection Pool (Update with your TiDB/MySQL credentials)
+// --- DATABASE CONNECTION POOL ---
 const pool = mysql.createPool({
     host: process.env.DB_HOST || 'your_tidb_host',
     user: process.env.DB_USER || 'your_tidb_user',
@@ -26,10 +38,40 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-// Helper: Strip HTML for meta descriptions
+// Verify database connection on startup
+(async () => {
+    try {
+        const connection = await pool.getConnection();
+        console.log('Successfully connected to TiDB/MySQL database pool.');
+        connection.release();
+    } catch (err) {
+        console.error('Database connection failed on startup:', err.message);
+    }
+})();
+
+// --- HELPER FUNCTIONS ---
 function stripHtml(html) {
     return (html || '').replace(/<[^>]*>?/gm, '').substring(0, 160);
 }
+
+function escapeHtml(str) {
+    return (str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+// --- HEALTH CHECK ENDPOINT ---
+app.get('/api/health', async (req, res) => {
+    try {
+        const [result] = await pool.query('SELECT 1 AS status');
+        res.json({ status: 'healthy', database: result[0].status === 1 ? 'connected' : 'error', timestamp: new Date() });
+    } catch (err) {
+        res.status(500).json({ status: 'unhealthy', error: err.message });
+    }
+});
 
 // --- SERVER-SIDE ARTICLE ROUTE WITH OPEN GRAPH META TAGS ---
 app.get('/article/:slug', async (req, res) => {
@@ -54,44 +96,54 @@ app.get('/article/:slug', async (req, res) => {
             }
         }
 
-        // Return HTML with injected Open Graph tags for social media scrapers (WhatsApp, Facebook, Twitter)
+        const safeTitle = escapeHtml(title);
+        const safeDesc = escapeHtml(description);
+        const safeImage = escapeHtml(imageUrl);
+        const safeUrl = escapeHtml(`${baseUrl}${req.originalUrl}`);
+        const safeSlug = escapeHtml(req.params.slug);
+
         const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
+    <title>${safeTitle}</title>
     
-    <!-- Open Graph / Social Media Meta Tags for Large Image Preview -->
+    <!-- Open Graph Meta Tags -->
     <meta property="og:type" content="article">
-    <meta property="og:title" content="${title}">
-    <meta property="og:description" content="${description}">
-    <meta property="og:image" content="${imageUrl}">
-    <meta property="og:url" content="${baseUrl}${req.originalUrl}">
+    <meta property="og:title" content="${safeTitle}">
+    <meta property="og:description" content="${safeDesc}">
+    <meta property="og:image" content="${safeImage}">
+    <meta property="og:url" content="${safeUrl}">
     
-    <!-- Twitter / X Card Meta Tags -->
+    <!-- Twitter Card Meta Tags -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="${title}">
-    <meta name="twitter:description" content="${description}">
-    <meta name="twitter:image" content="${imageUrl}">
+    <meta name="twitter:title" content="${safeTitle}">
+    <meta name="twitter:description" content="${safeDesc}">
+    <meta name="twitter:image" content="${safeImage}">
 
-    <!-- Redirect normal browser users to main app hash router -->
     <script>
-        window.location.href = '/#article/${req.params.slug}';
+        window.location.href = '/#article/${safeSlug}';
     </script>
 </head>
 <body style="font-family: sans-serif; text-align: center; padding-top: 50px; background: #f8fafc; color: #1e3a8a;">
     <h2>Loading Dikgang tsa Sol Plaatjie Article...</h2>
-    <p><a href="/#article/${req.params.slug}">Click here if you are not redirected automatically.</a></p>
+    <p><a href="/#article/${safeSlug}">Click here if you are not redirected automatically.</a></p>
 </body>
 </html>`;
         res.send(html);
     } catch (err) {
-        res.status(500).sendFile(path.join(__dirname, 'public', 'index.html'));
+        console.error("Error serving article OG route:", err);
+        const indexPath = path.join(__dirname, 'public', 'index.html');
+        res.sendFile(indexPath, (sendErr) => {
+            if (sendErr) {
+                res.status(500).send("Critical error loading application frontend.");
+            }
+        });
     }
 });
 
-// --- BASE64 IMAGE CONVERSION ENDPOINT (Crucial for WhatsApp/Facebook OG scraping) ---
+// --- BASE64 IMAGE CONVERSION ENDPOINT ---
 app.get('/api/articles/id/:id/image', async (req, res) => {
     try {
         const [rows] = await pool.query('SELECT image_url FROM articles WHERE id = ?', [req.params.id]);
@@ -110,13 +162,13 @@ app.get('/api/articles/id/:id/image', async (req, res) => {
         }
         res.redirect(dataUri);
     } catch (e) {
+        console.error("Image streaming error:", e);
         res.status(500).send('Error serving image');
     }
 });
 
-// --- API ENDPOINTS ---
+// --- API ENDPOINTS: ARTICLES ---
 
-// Get all articles (with search, category filters, and fallback for NULL/empty status)
 app.get('/api/articles', async (req, res) => {
     try {
         let query = 'SELECT * FROM articles WHERE (status = "published" OR status IS NULL OR status = "")';
@@ -133,35 +185,36 @@ app.get('/api/articles', async (req, res) => {
         const [rows] = await pool.query(query, params);
         res.json(rows);
     } catch (err) {
+        console.error("Error fetching articles:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Get single article by slug (includes associated ads for this article)
 app.get('/api/articles/:slug', async (req, res) => {
     try {
         const [articles] = await pool.query('SELECT * FROM articles WHERE slug = ?', [req.params.slug]);
         if (articles.length === 0) return res.status(404).json({ error: 'Article not found' });
         const article = articles[0];
 
-        // Increment view count
-        await pool.query('UPDATE articles SET views = views + 1 WHERE id = ?', [article.id]);
+        // Increment view count asynchronously
+        pool.query('UPDATE articles SET views = views + 1 WHERE id = ?', [article.id]).catch(e => console.error("View increment error:", e));
 
         const [comments] = await pool.query('SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC', [article.id]);
-        
-        // Fetch active ads allocated specifically to this article
         const [ads] = await pool.query('SELECT * FROM ad_placements WHERE article_id = ? AND status = "active"', [article.id]);
 
         res.json({ article, comments, ads });
     } catch (err) {
+        console.error("Error fetching single article:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Post new article (Supports WordPress-like embedding via content and video_embed fields)
 app.post('/api/articles', async (req, res) => {
     try {
         const { title, category, content, image_url, image_source, video_embed, journalist_id, journalist_name } = req.body;
+        if (!title || !content) {
+            return res.status(400).json({ error: 'Title and content are required fields.' });
+        }
         const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
         const status = (req.body.status || 'published'); 
 
@@ -169,20 +222,20 @@ app.post('/api/articles', async (req, res) => {
         await pool.query(query, [title, slug, category, content, image_url, image_source, video_embed, journalist_id, journalist_name, status]);
         res.json({ message: 'Article submitted successfully!', slug });
     } catch (err) {
+        console.error("Error creating article:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Categories list
+// --- API ENDPOINTS: CATEGORIES & AUTH ---
+
 app.get('/api/categories', (req, res) => {
     res.json(['Politics', 'Local News', 'Business', 'Sport', 'Entertainment', 'Opinion', 'Lifestyle', 'Technology', 'Education', 'Crime & Courts']);
 });
 
-// Authentication
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
-        // Hardcoded admin fallback
         if (username === 'admin' && password === 'admin') {
             return res.json({ user: { id: 0, username: 'admin', role: 'admin', full_name: 'System Administrator' } });
         }
@@ -190,6 +243,7 @@ app.post('/api/auth/login', async (req, res) => {
         if (users.length === 0) return res.status(401).json({ error: 'Invalid username or password' });
         res.json({ user: users[0] });
     } catch (err) {
+        console.error("Login error:", err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -201,11 +255,13 @@ app.post('/api/auth/register', async (req, res) => {
         await pool.query(query, [full_name, username, password, email, whatsapp, address, role || 'journalist']);
         res.json({ message: 'Registration submitted successfully! Awaiting admin approval.' });
     } catch (err) {
+        console.error("Registration error:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Admin Dashboard Data (Returns ad_placements and referrers with earnings)
+// --- API ENDPOINTS: ADMIN DASHBOARD & MANAGEMENT ---
+
 app.get('/api/admin/dashboard', async (req, res) => {
     try {
         const [users] = await pool.query('SELECT * FROM users');
@@ -214,6 +270,7 @@ app.get('/api/admin/dashboard', async (req, res) => {
         const [referrers] = await pool.query('SELECT * FROM referrers ORDER BY earnings DESC');
         res.json({ users, articles, ads, referrers });
     } catch (err) {
+        console.error("Admin dashboard fetch error:", err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -245,10 +302,9 @@ app.post('/api/admin/ads/:id/activate', async (req, res) => {
     }
 });
 
-// --- ADMIN: ALLOCATE OR REALLOCATE AD TO A NEWS ARTICLE ---
 app.post('/api/admin/ads/:id/allocate', async (req, res) => {
     try {
-        const { article_id } = req.body; // Can be article ID or null to unallocate
+        const { article_id } = req.body;
         await pool.query('UPDATE ad_placements SET article_id = ? WHERE id = ?', [article_id || null, req.params.id]);
         res.json({ success: true, message: 'Ad placement allocation updated successfully' });
     } catch (err) {
@@ -257,7 +313,6 @@ app.post('/api/admin/ads/:id/allocate', async (req, res) => {
     }
 });
 
-// --- ADMIN: UPDATE REFERRER EARNINGS ---
 app.post('/api/admin/referrers/:id/earnings', async (req, res) => {
     try {
         const { earnings } = req.body;
@@ -269,22 +324,14 @@ app.post('/api/admin/referrers/:id/earnings', async (req, res) => {
     }
 });
 
-// --- POST AD PLACEMENT ENDPOINT ---
+// --- API ENDPOINTS: ADS, REFERRERS, COMMENTS ---
+
 app.post('/api/ads', async (req, res) => {
     try {
         const { 
-            title, 
-            ad_type, 
-            type, 
-            link_url, 
-            media_url, 
-            creator_id, 
-            business_name, 
-            email, 
-            whatsapp, 
-            address, 
-            payment_proof_url,
-            article_id 
+            title, ad_type, type, link_url, media_url, 
+            creator_id, business_name, email, whatsapp, 
+            address, payment_proof_url, article_id 
         } = req.body;
 
         const adTypeVal = ad_type || type || 'banner';
@@ -297,29 +344,19 @@ app.post('/api/ads', async (req, res) => {
         `;
 
         const values = [
-            adId,
-            title,
-            adTypeVal,
-            link_url || null,
-            media_url || null,
-            creator_id || null,
-            business_name || null,
-            email || null,
-            whatsapp || null,
-            address || null,
-            payment_proof_url || null,
-            article_id || null
+            adId, title, adTypeVal, link_url || null, media_url || null,
+            creator_id || null, business_name || null, email || null, 
+            whatsapp || null, address || null, payment_proof_url || null, article_id || null
         ];
 
         await pool.query(query, values);
         res.status(201).json({ success: true, message: 'Ad created successfully', adId });
     } catch (err) {
-        console.error("Database insert error:", err);
+        console.error("Database insert error for ad:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Referrers / Share & Earn
 app.post('/api/referrers', async (req, res) => {
     try {
         const { name, email, whatsapp, residential_address } = req.body;
@@ -330,18 +367,30 @@ app.post('/api/referrers', async (req, res) => {
     }
 });
 
-// Comments
 app.post('/api/articles/:id/comments', async (req, res) => {
     try {
         const { username, email, whatsapp, comment } = req.body;
+        if (!username || !comment) {
+            return res.status(400).json({ error: 'Username and comment are required.' });
+        }
         await pool.query('INSERT INTO comments (article_id, username, email, whatsapp, comment) VALUES (?, ?, ?, ?, ?)', [req.params.id, username, email, whatsapp, comment]);
         res.json({ success: true });
     } catch (err) {
+        console.error("Comment insertion error:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-const PORT = process.env.PORT || 10000;
+// --- SPA FALLBACK ROUTE ---
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'), (err) => {
+        if (err) {
+            res.status(500).send("Application frontend index.html could not be loaded.");
+        }
+    });
+});
+
+// --- START SERVER ---
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
