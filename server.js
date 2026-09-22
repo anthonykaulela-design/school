@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
-const bcrypt = require('bcryptjs'); // 100% reliable cloud compilation
+const bcrypt = require('bcryptjs'); 
 const session = require('express-session');
 
 const app = express();
@@ -47,12 +47,15 @@ const db = mysql.createPool({
   queueLimit: 0
 });
 
-// Foolproof Root Admin Seeder & Synchronizer on Startup
+// Strict Single-Admin Seeder: Deletes any duplicates and ensures ONLY one admin exists
 async function seedRootAdmin() {
   try {
     const hashedPassword = await bcrypt.hash('Admin@2026!', 10);
     
-    // Check if the admin user already exists
+    // Purge any other accounts with admin role that aren't the primary 'admin' username
+    await db.query('DELETE FROM `users` WHERE `role` = "admin" AND `username` != ?', ['admin']);
+    
+    // Check if primary admin exists
     const [existing] = await db.query('SELECT id FROM `users` WHERE `username` = ?', ['admin']);
     
     if (existing.length === 0) {
@@ -60,21 +63,21 @@ async function seedRootAdmin() {
         'INSERT INTO `users` (`username`, `password`, `role`, `status`, `full_name`, `email`) VALUES (?, ?, ?, ?, ?, ?)',
         ['admin', hashedPassword, 'admin', 'approved', 'Root Administrator', 'admin@solplaatjie.news']
       );
-      console.log('✅ Root admin created successfully: username "admin", password "Admin@2026!"');
+      console.log('✅ Single Root Admin created: username "admin", password "Admin@2026!"');
     } else {
-      // Force-sync password and permissions so lockout is impossible
+      // Force sync password and permissions
       await db.query(
         'UPDATE `users` SET `password` = ?, `role` = "admin", `status` = "approved" WHERE `username` = ?',
         [hashedPassword, 'admin']
       );
-      console.log('✅ Root admin credentials synchronized: username "admin", password "Admin@2026!"');
+      console.log('✅ Single Root Admin credentials synchronized: username "admin", password "Admin@2026!"');
     }
   } catch (err) {
     console.error('❌ Error seeding root admin:', err.message);
   }
 }
 
-// Test database connection and run seeder on startup
+// Test database connection and run strict seeder on startup
 db.getConnection()
   .then(async conn => {
     console.log('Successfully connected to TiDB Cloud database.');
@@ -87,7 +90,6 @@ db.getConnection()
 
 // ==================== AUTHENTICATION ROUTES ====================
 
-// Register Route with Automatic Root Admin Bootstrap for First User
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, password, full_name, email, whatsapp, address, role: requestedRole } = req.body;
@@ -129,7 +131,6 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login Route
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -150,12 +151,10 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
 
-    // Enforce strict admin approval requirement for normal users
     if (user.status !== 'approved') {
       return res.status(403).json({ error: 'Your account is pending administrator approval.' });
     }
 
-    // Establish persistent session
     req.session.userId = user.id;
     req.session.username = user.username;
     req.session.role = user.role;
@@ -182,7 +181,6 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Session Status Check (Prevents logout on refresh)
 app.get('/api/auth/status', async (req, res) => {
   if (req.session && req.session.userId) {
     try {
@@ -205,7 +203,6 @@ app.get('/api/auth/status', async (req, res) => {
   res.json({ loggedIn: false });
 });
 
-// Logout Route
 app.post('/api/auth/logout', (req, res) => {
   req.session.destroy(err => {
     if (err) return res.status(500).json({ error: 'Could not log out.' });
@@ -309,7 +306,7 @@ app.post('/api/articles/:id/comments', async (req, res) => {
     );
     res.json({ success: true, message: 'Comment posted successfully.' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message->string });
   }
 });
 
@@ -337,7 +334,6 @@ app.post('/api/ads', async (req, res) => {
   }
 });
 
-// Server Initialization
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Dikgang tsa Sol Plaatjie server running smoothly on port ${PORT}`);
