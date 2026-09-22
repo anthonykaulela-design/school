@@ -172,11 +172,35 @@ app.post('/api/auth/register', async (req, res) => {
 // Admin Dashboard Data
 app.get('/api/admin/dashboard', async (req, res) => {
   try {
-    const [users] = await pool.query("SELECT id, username, role, status, full_name, email, whatsapp FROM users");
+    const [users] = await pool.query("SELECT id, username, role, status, full_name, email, whatsapp, created_at FROM users");
     const [articles] = await pool.query("SELECT a.*, u.username as journalist_username FROM articles a LEFT JOIN users u ON a.journalist_id = u.id ORDER BY a.created_at DESC");
     const [ads] = await pool.query("SELECT * FROM ads ORDER BY created_at DESC");
     const [referrers] = await pool.query("SELECT * FROM referrers ORDER BY created_at DESC");
-    res.json({ users, articles, ads, referrers });
+    
+    // Explicit filtered lists for convenience
+    const pendingJournalists = users.filter(u => u.role === 'journalist' && u.status === 'pending');
+    const approvedJournalists = users.filter(u => u.role === 'journalist' && u.status === 'approved');
+
+    res.json({ users, pendingJournalists, approvedJournalists, articles, ads, referrers });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dedicated Journalist Endpoints
+app.get('/api/admin/journalists/pending', async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT id, username, full_name, email, whatsapp, address, created_at FROM users WHERE role = 'journalist' AND status = 'pending'");
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/journalists/approved', async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT id, username, full_name, email, whatsapp, address, created_at FROM users WHERE role = 'journalist' AND status = 'approved'");
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -187,7 +211,7 @@ app.post('/api/admin/users/:id/status', async (req, res) => {
   try {
     const { status } = req.body; // 'approved' or 'rejected'
     await pool.query("UPDATE users SET status = ? WHERE id = ?", [status, req.params.id]);
-    res.json({ success: true });
+    res.json({ success: true, message: `Journalist status updated to ${status}.` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -272,7 +296,7 @@ app.post('/api/articles/:id/comments', async (req, res) => {
   }
 });
 
-// Ads Management & Monetization (R3 per 100 views, 50% split)
+// Ads Management & Monetization
 app.get('/api/ads', async (req, res) => {
   try {
     const [ads] = await pool.query("SELECT * FROM ads WHERE status = 'active'");
@@ -312,7 +336,7 @@ app.post('/api/admin/ads/:id/activate', async (req, res) => {
 
 app.post('/api/ads/:id/track', async (req, res) => {
   try {
-    const { action } = req.body; // 'view' or 'click'
+    const { action } = req.body; 
     if (action === 'view') {
       await pool.query("UPDATE ads SET views = views + 1 WHERE id = ?", [req.params.id]);
     } else if (action === 'click') {
@@ -324,7 +348,7 @@ app.post('/api/ads/:id/track', async (req, res) => {
   }
 });
 
-// Referrers / Share & Earn (R0.2 per 100 views)
+// Referrers / Share & Earn
 app.post('/api/referrers', async (req, res) => {
   try {
     const { name, email, whatsapp, residential_address } = req.body;
