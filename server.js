@@ -159,7 +159,7 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, password, role, full_name, email, whatsapp, address } = req.body;
     const status = (role === 'journalist') ? 'pending' : 'approved';
-    const [result] = await pool.query(
+    await pool.query(
       "INSERT INTO users (username, password, role, status, full_name, email, whatsapp, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [username, password, role, status, full_name, email, whatsapp, address]
     );
@@ -169,38 +169,27 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Admin Dashboard Data
+// Admin Dashboard Data (providing both camelCase and snake_case keys for compatibility)
 app.get('/api/admin/dashboard', async (req, res) => {
   try {
-    const [users] = await pool.query("SELECT id, username, role, status, full_name, email, whatsapp, created_at FROM users");
+    const [users] = await pool.query("SELECT id, username, role, status, full_name, email, whatsapp, address, created_at FROM users");
     const [articles] = await pool.query("SELECT a.*, u.username as journalist_username FROM articles a LEFT JOIN users u ON a.journalist_id = u.id ORDER BY a.created_at DESC");
     const [ads] = await pool.query("SELECT * FROM ads ORDER BY created_at DESC");
     const [referrers] = await pool.query("SELECT * FROM referrers ORDER BY created_at DESC");
     
-    // Explicit filtered lists for convenience
-    const pendingJournalists = users.filter(u => u.role === 'journalist' && u.status === 'pending');
-    const approvedJournalists = users.filter(u => u.role === 'journalist' && u.status === 'approved');
+    const pending_journalists = users.filter(u => u.role === 'journalist' && u.status === 'pending');
+    const approved_journalists = users.filter(u => u.role === 'journalist' && u.status === 'approved');
 
-    res.json({ users, pendingJournalists, approvedJournalists, articles, ads, referrers });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Dedicated Journalist Endpoints
-app.get('/api/admin/journalists/pending', async (req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT id, username, full_name, email, whatsapp, address, created_at FROM users WHERE role = 'journalist' AND status = 'pending'");
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/admin/journalists/approved', async (req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT id, username, full_name, email, whatsapp, address, created_at FROM users WHERE role = 'journalist' AND status = 'approved'");
-    res.json(rows);
+    res.json({ 
+      users, 
+      pending_journalists, 
+      approved_journalists, 
+      pendingJournalists: pending_journalists, 
+      approvedJournalists: approved_journalists, 
+      articles, 
+      ads, 
+      referrers 
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -211,7 +200,7 @@ app.post('/api/admin/users/:id/status', async (req, res) => {
   try {
     const { status } = req.body; // 'approved' or 'rejected'
     await pool.query("UPDATE users SET status = ? WHERE id = ?", [status, req.params.id]);
-    res.json({ success: true, message: `Journalist status updated to ${status}.` });
+    res.json({ success: true, message: `User status updated to ${status}.` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -260,14 +249,26 @@ app.get('/api/articles/:slug', async (req, res) => {
 app.post('/api/articles', async (req, res) => {
   try {
     const { title, content, category, journalist_id, journalist_name, image_url, image_source, video_embed } = req.body;
+    
+    // Check if author is admin to publish instantly
+    let status = 'pending';
+    if (journalist_id) {
+      const [userRows] = await pool.query("SELECT role FROM users WHERE id = ?", [journalist_id]);
+      if (userRows.length > 0 && userRows[0].role === 'admin') {
+        status = 'published';
+      }
+    } else {
+      status = 'published'; // Default direct admin post
+    }
+
     const baseSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
     const slug = `${baseSlug}-${Date.now().toString().slice(-6)}`;
     
     await pool.query(
-      "INSERT INTO articles (title, slug, content, category, journalist_id, journalist_name, image_url, image_source, video_embed, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
-      [title, slug, content, category, journalist_id, journalist_name, image_url, image_source, video_embed]
+      "INSERT INTO articles (title, slug, content, category, journalist_id, journalist_name, image_url, image_source, video_embed, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [title, slug, content, category, journalist_id || null, journalist_name || 'Admin', image_url, image_source, video_embed, status]
     );
-    res.json({ success: true, message: 'Article submitted successfully and pending admin publication.' });
+    res.json({ success: true, message: status === 'published' ? 'Article published successfully!' : 'Article submitted successfully and pending admin publication.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
