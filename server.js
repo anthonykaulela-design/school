@@ -38,12 +38,120 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-// Verify database connection on startup
+// --- AUTOMATIC DATABASE SCHEMA INITIALIZATION ---
+async function initializeDatabase() {
+    try {
+        const connection = await pool.getConnection();
+        
+        // Users table
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                full_name VARCHAR(255) NOT NULL,
+                username VARCHAR(100) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                whatsapp VARCHAR(50) NOT NULL,
+                address TEXT NOT NULL,
+                role VARCHAR(50) DEFAULT 'journalist',
+                status VARCHAR(50) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Articles table
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS articles (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                slug VARCHAR(255) UNIQUE NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                content LONGTEXT NOT NULL,
+                image_url LONGTEXT,
+                image_source VARCHAR(255),
+                video_embed LONGTEXT,
+                journalist_id INT,
+                journalist_name VARCHAR(255),
+                status VARCHAR(50) DEFAULT 'published',
+                views INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Comments table
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS comments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                article_id INT NOT NULL,
+                username VARCHAR(100) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                whatsapp VARCHAR(50) NOT NULL,
+                comment TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+            )
+        `);
+
+        // Ad Placements table
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS ad_placements (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ad_id VARCHAR(100) UNIQUE NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                type VARCHAR(50) DEFAULT 'banner',
+                link_url TEXT,
+                media_url LONGTEXT,
+                creator_id INT,
+                business_name VARCHAR(255),
+                email VARCHAR(255),
+                whatsapp VARCHAR(50),
+                address TEXT,
+                payment_proof_url LONGTEXT,
+                status VARCHAR(50) DEFAULT 'pending',
+                article_id INT,
+                views INT DEFAULT 0,
+                clicks INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Referrers table
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS referrers (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                whatsapp VARCHAR(50) NOT NULL,
+                residential_address TEXT NOT NULL,
+                earnings DECIMAL(10,2) DEFAULT 0.00,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Seed default admin user if not exists
+        const [adminRows] = await connection.query('SELECT * FROM users WHERE username = ?', ['admin']);
+        if (adminRows.length === 0) {
+            await connection.query(
+                'INSERT INTO users (full_name, username, password, email, whatsapp, address, role, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                ['System Administrator', 'admin', 'admin', 'admin@solplaatjie.news', '0820000000', 'Kimberley Civic Centre', 'admin', 'approved']
+            );
+            console.log('Default admin user seeded (admin / admin).');
+        }
+
+        connection.release();
+        console.log('Database tables verified and initialized successfully.');
+    } catch (err) {
+        console.error('Database initialization error:', err.message);
+    }
+}
+
+// Verify and initialize on startup
 (async () => {
     try {
         const connection = await pool.getConnection();
         console.log('Successfully connected to TiDB/MySQL database pool.');
         connection.release();
+        await initializeDatabase();
     } catch (err) {
         console.error('Database connection failed on startup:', err.message);
     }
@@ -230,7 +338,7 @@ app.post('/api/articles', async (req, res) => {
 // --- API ENDPOINTS: CATEGORIES & AUTH ---
 
 app.get('/api/categories', (req, res) => {
-    res.json(['Politics', 'Local News', 'Business', 'Sport', 'Entertainment', 'Opinion', 'Lifestyle', 'Technology', 'Education', 'Crime & Courts']);
+    res.json(['Politics', 'Local News', 'Business', 'Sport', 'Entertainment', 'Opinion', 'Lifestyle', 'Technology', 'Education', 'Crime & Courts', 'Municipal Governance']);
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -324,7 +432,17 @@ app.post('/api/admin/referrers/:id/earnings', async (req, res) => {
     }
 });
 
-// --- API ENDPOINTS: ADS, REFERRERS, COMMENTS ---
+// --- API ENDPOINTS: ADS, REFERRERS, COMMENTS, TRACKING ---
+
+app.get('/api/ads', async (req, res) => {
+    try {
+        const [ads] = await pool.query('SELECT * FROM ad_placements WHERE status = "active"');
+        res.json(ads);
+    } catch (err) {
+        console.error("Error fetching ads:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.post('/api/ads', async (req, res) => {
     try {
@@ -339,8 +457,8 @@ app.post('/api/ads', async (req, res) => {
 
         const query = `
             INSERT INTO ad_placements 
-            (ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url, status, article_id) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            (ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url, status, article_id, views, clicks) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, 0)
         `;
 
         const values = [
@@ -350,9 +468,26 @@ app.post('/api/ads', async (req, res) => {
         ];
 
         await pool.query(query, values);
-        res.status(201).json({ success: true, message: 'Ad created successfully', adId });
+        res.status(201).json({ success: true, message: 'Ad created successfully', ad_id: adId });
     } catch (err) {
         console.error("Database insert error for ad:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ad view and click tracking endpoint
+app.post('/api/ads/:id/track', async (req, res) => {
+    try {
+        const { action } = req.body; // 'view' or 'click'
+        const adId = req.params.id;
+        if (action === 'click') {
+            await pool.query('UPDATE ad_placements SET clicks = clicks + 1 WHERE id = ? OR ad_id = ?', [adId, adId]);
+        } else {
+            await pool.query('UPDATE ad_placements SET views = views + 1 WHERE id = ? OR ad_id = ?', [adId, adId]);
+        }
+        res.json({ success: true });
+    } catch (err) {
+        console.error("Ad tracking error:", err);
         res.status(500).json({ error: err.message });
     }
 });
