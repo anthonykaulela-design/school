@@ -6,37 +6,56 @@ const session = require('express-session');
 
 const app = express();
 
-// Middleware configuration
+// CRITICAL for Render: Trust the reverse proxy load balancer
+app.set('trust proxy', 1);
+
+// CORS configuration supporting cross-site credentials (Cloudflare frontend to Render backend)
 app.use(cors({
-  origin: true, // Allows all frontend origins (or specify your worker/domain URL)
+  origin: true, // Reflects the incoming request origin dynamically
   credentials: true
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Express Session configuration
+// Express Session Configuration with cross-site cookie persistence
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dikgang_sol_plaatjie_secure_secret_2026',
   resave: false,
   saveUninitialized: false,
+  proxy: true, // Trust Render's proxy for secure cookies
   cookie: { 
-    secure: false, // Set to true if running exclusively over HTTPS in production
+    secure: true,   // Required for cross-site cookies in production (HTTPS)
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 1 day session validity
+    sameSite: 'none', // Required when frontend and backend are on different domains (Cloudflare & Render)
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days session validity
   }
 }));
 
 // TiDB Cloud MySQL Database Connection Pool
 const db = mysql.createPool({
-  host: process.env.DB_HOST || 'your_tidb_host_here',
-  user: process.env.DB_USER || 'your_tidb_user_here',
-  password: process.env.DB_PASSWORD || 'your_tidb_password_here',
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME || 'bongi_trade',
-  port: process.env.DB_PORT || 4000,
+  port: process.env.DB_PORT ? parseInt(process.env.DB_PORT) : 4000,
   ssl: {
     rejectUnauthorized: true
-  }
+  },
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
+
+// Test database connection on startup
+db.getConnection()
+  .then(conn => {
+    console.log('Successfully connected to TiDB Cloud database.');
+    conn.release();
+  })
+  .catch(err => {
+    console.error('Database connection failed:', err.message);
+  });
 
 // ==================== AUTHENTICATION ROUTES ====================
 
@@ -49,9 +68,8 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Username and password are required.' });
     }
 
-    // Check if username or email already exists
     const [existing] = await db.query(
-      'SELECT id FROM `users` WHERE `username` = ? OR `email` = ?', 
+      'SELECT id FROM `users` WHERE `username` = ? OR (`email` IS NOT NULL AND `email` = ?)', 
       [username, email || '']
     );
     if (existing.length > 0) {
@@ -110,20 +128,26 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(403).json({ error: 'Your account is pending administrator approval.' });
     }
 
-    // Establish session
+    // Establish persistent session
     req.session.userId = user.id;
     req.session.username = user.username;
     req.session.role = user.role;
 
-    res.json({ 
-      success: true, 
-      message: 'Logged in successfully.', 
-      user: { 
-        id: user.id, 
-        username: user.username, 
-        role: user.role, 
-        full_name: user.full_name 
-      } 
+    req.session.save(err => {
+      if (err) {
+        console.error('Session save error:', err);
+        return res.status(500).json({ error: 'Failed to establish session.' });
+      }
+      res.json({ 
+        success: true, 
+        message: 'Logged in successfully.', 
+        user: { 
+          id: user.id, 
+          username: user.username, 
+          role: user.role, 
+          full_name: user.full_name 
+        } 
+      });
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -131,27 +155,34 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Session Status Check
-app.get('/api/auth/status', (req, res) => {
+// Session Status Check (Prevents logout on refresh)
+app.get('/api/auth/status', async (req, res) => {
   if (req.session && req.session.userId) {
-    res.json({ 
-      loggedIn: true, 
-      user: { 
-        id: req.session.userId, 
-        username: req.session.username, 
-        role: req.session.role 
-      } 
-    });
-  } else {
-    res.json({ loggedIn: false });
+    try {
+      const [users] = await db.query('SELECT id, username, role, status, full_name FROM `users` WHERE `id` = ?', [req.session.userId]);
+      if (users.length > 0 && users[0].status === 'approved') {
+        return res.json({ 
+          loggedIn: true, 
+          user: { 
+            id: users[0].id, 
+            username: users[0].username, 
+            role: users[0].role,
+            full_name: users[0].full_name
+          } 
+        });
+      }
+    } catch (err) {
+      console.error('Status check error:', err);
+    }
   }
+  res.json({ loggedIn: false });
 });
 
 // Logout Route
 app.post('/api/auth/logout', (req, res) => {
   req.session.destroy(err => {
     if (err) return res.status(500).json({ error: 'Could not log out.' });
-    res.clearCookie('connect.sid');
+    res.clearCookie('connect.sid', { path: '/', secure: true, sameSite: 'none' });
     res.json({ success: true, message: 'Logged out successfully.' });
   });
 });
@@ -177,7 +208,7 @@ app.post('/api/admin/users/:id/status', async (req, res) => {
     if (!req.session || req.session.role !== 'admin') {
       return res.status(403).json({ error: 'Unauthorized access.' });
     }
-    const { status } = req.body; // 'approved', 'rejected', 'pending'
+    const { status } = req.body; 
     const userId = req.params.id;
 
     await db.query('UPDATE `users` SET `status` = ? WHERE `id` = ?', [status, userId]);
@@ -279,7 +310,7 @@ app.post('/api/ads', async (req, res) => {
   }
 });
 
-// Start Server
+// Server Initialization
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Dikgang tsa Sol Plaatjie server running smoothly on port ${PORT}`);
