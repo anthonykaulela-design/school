@@ -116,10 +116,10 @@ app.get('/api/articles/id/:id/image', async (req, res) => {
 
 // --- API ENDPOINTS ---
 
-// Get all articles (with search and category filters)
+// Get all articles (with search, category filters, and fallback for NULL/empty status)
 app.get('/api/articles', async (req, res) => {
     try {
-        let query = 'SELECT * FROM articles WHERE status = "published"';
+        let query = 'SELECT * FROM articles WHERE (status = "published" OR status IS NULL OR status = "")';
         let params = [];
         if (req.query.search) {
             query += ' AND (title LIKE ? OR content LIKE ?)';
