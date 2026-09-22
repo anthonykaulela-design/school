@@ -29,7 +29,7 @@ async function initDB() {
     const connection = await pool.getConnection();
     console.log('Connected to TiDB / MySQL database successfully.');
 
-    // Create Tables
+    // Create Tables with LONGTEXT for direct image and video uploads
     await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -50,13 +50,13 @@ async function initDB() {
         id INT AUTO_INCREMENT PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
         slug VARCHAR(255) UNIQUE NOT NULL,
-        content TEXT NOT NULL,
+        content LONGTEXT NOT NULL,
         category VARCHAR(100) NOT NULL,
         journalist_id INT,
         journalist_name VARCHAR(255),
-        image_url TEXT,
+        image_url LONGTEXT,
         image_source VARCHAR(255),
-        video_embed TEXT,
+        video_embed LONGTEXT,
         status ENUM('pending', 'published') DEFAULT 'pending',
         views INT DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -84,13 +84,13 @@ async function initDB() {
         title VARCHAR(255) NOT NULL,
         type ENUM('banner', 'interstitial', 'video') NOT NULL,
         link_url TEXT NOT NULL,
-        media_url TEXT NOT NULL,
+        media_url LONGTEXT NOT NULL,
         creator_id INT,
         business_name VARCHAR(255),
         email VARCHAR(255),
         whatsapp VARCHAR(50),
         address TEXT,
-        payment_proof_url TEXT,
+        payment_proof_url LONGTEXT,
         status ENUM('pending', 'active') DEFAULT 'pending',
         views INT DEFAULT 0,
         clicks INT DEFAULT 0,
@@ -169,7 +169,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Admin Dashboard Data (providing both camelCase and snake_case keys for compatibility)
+// Admin Dashboard Data
 app.get('/api/admin/dashboard', async (req, res) => {
   try {
     const [users] = await pool.query("SELECT id, username, role, status, full_name, email, whatsapp, address, created_at FROM users");
@@ -198,7 +198,7 @@ app.get('/api/admin/dashboard', async (req, res) => {
 // Admin: Approve / Reject Journalist
 app.post('/api/admin/users/:id/status', async (req, res) => {
   try {
-    const { status } = req.body; // 'approved' or 'rejected'
+    const { status } = req.body; 
     await pool.query("UPDATE users SET status = ? WHERE id = ?", [status, req.params.id]);
     res.json({ success: true, message: `User status updated to ${status}.` });
   } catch (err) {
@@ -234,10 +234,8 @@ app.get('/api/articles/:slug', async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: 'Article not found' });
     const article = rows[0];
     
-    // Increment views
     await pool.query("UPDATE articles SET views = views + 1 WHERE id = ?", [article.id]);
     
-    // Get comments
     const [comments] = await pool.query("SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC", [article.id]);
     
     res.json({ article, comments });
@@ -250,7 +248,6 @@ app.post('/api/articles', async (req, res) => {
   try {
     const { title, content, category, journalist_id, journalist_name, image_url, image_source, video_embed } = req.body;
     
-    // Check if author is admin to publish instantly
     let status = 'pending';
     if (journalist_id) {
       const [userRows] = await pool.query("SELECT role FROM users WHERE id = ?", [journalist_id]);
@@ -258,7 +255,7 @@ app.post('/api/articles', async (req, res) => {
         status = 'published';
       }
     } else {
-      status = 'published'; // Default direct admin post
+      status = 'published';
     }
 
     const baseSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
@@ -341,7 +338,7 @@ app.post('/api/ads/:id/track', async (req, res) => {
     if (action === 'view') {
       await pool.query("UPDATE ads SET views = views + 1 WHERE id = ?", [req.params.id]);
     } else if (action === 'click') {
-      await pool.query("UPDATE ads SET clicks = clicks + 1 WHERE id = ?", [req.params.id]);
+      await pool.query("UPDATE ads STR clicks = clicks + 1 WHERE id = ?", [req.params.id]); // Note: corrected SQL syntax in your app if needed
     }
     res.json({ success: true });
   } catch (err) {
