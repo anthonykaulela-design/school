@@ -241,40 +241,53 @@ app.post('/api/admin/ads/:id/activate', async (req, res) => {
     }
 });
 
-// Ads
-app.get('/api/ads', async (req, res) => {
-    try {
-        const [ads] = await pool.query('SELECT * FROM ads WHERE status = "active"');
-        res.json(ads);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
+router.post('/ads', (req, res) => {
+    // Accept both 'ad_type' or 'type' from the request body to prevent mismatches
+    const { 
+        title, 
+        ad_type, 
+        type, 
+        link_url, 
+        media_url, 
+        creator_id, 
+        business_name, 
+        email, 
+        whatsapp, 
+        address, 
+        payment_proof_url 
+    } = req.body;
 
-app.post('/api/ads', async (req, res) => {
-    try {
-        const { business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address, creator_id } = req.body;
-        const ad_id = 'AD-' + Math.floor(100000 + Math.random() * 900000);
-        const query = `INSERT INTO ads (ad_id, business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address, creator_id, status, views, clicks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0)`;
-        await pool.query(query, [ad_id, business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address, creator_id]);
-        res.json({ message: 'Ad submitted successfully', ad_id });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
+    const adTypeVal = ad_type || type || 'banner';
+    const adId = 'AD_' + Date.now();
 
-app.post('/api/ads/:id/track', async (req, res) => {
-    try {
-        const { action } = req.body;
-        if (action === 'view') {
-            await pool.query('UPDATE ads SET views = views + 1 WHERE id = ?', [req.params.id]);
-        } else if (action === 'click') {
-            await pool.query('UPDATE ads SET clicks = clicks + 1 WHERE id = ?', [req.params.id]);
+    const query = `
+        INSERT INTO ad_placements 
+        (ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url, status) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const values = [
+        adId,
+        title,
+        adTypeVal,
+        link_url || null,
+        media_url || null,
+        creator_id || null,
+        business_name || null,
+        email || null,
+        whatsapp || null,
+        address || null,
+        payment_proof_url || null,
+        'pending'
+    ];
+
+    db.query(query, values, (err, result) => {
+        if (err) {
+            console.error("Database insert error:", err);
+            return res.status(500).json({ error: err.message });
         }
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        res.status(201).json({ success: true, message: 'Ad created successfully', adId });
+    });
 });
 
 // Referrers / Share & Earn
