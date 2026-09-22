@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
-const bcrypt = require('bcryptjs'); // Using bcryptjs for 100% reliable cloud compilation
+const bcrypt = require('bcryptjs'); // 100% reliable cloud compilation
 const session = require('express-session');
 
 const app = express();
@@ -47,11 +47,39 @@ const db = mysql.createPool({
   queueLimit: 0
 });
 
-// Test database connection on startup
+// Foolproof Root Admin Seeder & Synchronizer on Startup
+async function seedRootAdmin() {
+  try {
+    const hashedPassword = await bcrypt.hash('Admin@2026!', 10);
+    
+    // Check if the admin user already exists
+    const [existing] = await db.query('SELECT id FROM `users` WHERE `username` = ?', ['admin']);
+    
+    if (existing.length === 0) {
+      await db.query(
+        'INSERT INTO `users` (`username`, `password`, `role`, `status`, `full_name`, `email`) VALUES (?, ?, ?, ?, ?, ?)',
+        ['admin', hashedPassword, 'admin', 'approved', 'Root Administrator', 'admin@solplaatjie.news']
+      );
+      console.log('✅ Root admin created successfully: username "admin", password "Admin@2026!"');
+    } else {
+      // Force-sync password and permissions so lockout is impossible
+      await db.query(
+        'UPDATE `users` SET `password` = ?, `role` = "admin", `status` = "approved" WHERE `username` = ?',
+        [hashedPassword, 'admin']
+      );
+      console.log('✅ Root admin credentials synchronized: username "admin", password "Admin@2026!"');
+    }
+  } catch (err) {
+    console.error('❌ Error seeding root admin:', err.message);
+  }
+}
+
+// Test database connection and run seeder on startup
 db.getConnection()
-  .then(conn => {
+  .then(async conn => {
     console.log('Successfully connected to TiDB Cloud database.');
     conn.release();
+    await seedRootAdmin();
   })
   .catch(err => {
     console.error('Database connection failed:', err.message);
@@ -59,7 +87,7 @@ db.getConnection()
 
 // ==================== AUTHENTICATION ROUTES ====================
 
-// Register Route with Automatic Root Admin Bootstrap
+// Register Route with Automatic Root Admin Bootstrap for First User
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, password, full_name, email, whatsapp, address, role: requestedRole } = req.body;
@@ -76,36 +104,6 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Username or email is already registered.' });
     }
 
-
-// Automatically seed a default root admin on server startup if none exists
-async function seedRootAdmin() {
-  try {
-    const [rows] = await db.query('SELECT COUNT(*) as count FROM `users`');
-    if (rows[0].count === 0) {
-      const hashedPassword = await bcrypt.hash('Admin@2026!', 10);
-      await db.query(
-        'INSERT INTO `users` (`username`, `password`, `role`, `status`, `full_name`, `email`) VALUES (?, ?, ?, ?, ?, ?)',
-        ['admin', hashedPassword, 'admin', 'approved', 'Root Administrator', 'admin@solplaatjie.news']
-      );
-      console.log('✅ Default root admin seeded successfully: username "admin", password "Admin@2026!"');
-    }
-  } catch (err) {
-    console.error('❌ Error seeding root admin:', err.message);
-  }
-}
-
-// Test database connection and run seeder on startup
-db.getConnection()
-  .then(async conn => {
-    console.log('Successfully connected to TiDB Cloud database.');
-    conn.release();
-    await seedRootAdmin(); // Automatically creates the admin if table is empty
-  })
-  .catch(err => {
-    console.error('Database connection failed:', err.message);
-  });
-
-    // Check if the database table is empty to bootstrap the initial administrator
     const [rows] = await db.query('SELECT COUNT(*) as count FROM `users`');
     const isFirstUser = rows[0].count === 0;
 
@@ -152,7 +150,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
 
-    // Enforce strict admin approval requirement
+    // Enforce strict admin approval requirement for normal users
     if (user.status !== 'approved') {
       return res.status(403).json({ error: 'Your account is pending administrator approval.' });
     }
