@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs'); // Using bcryptjs for 100% reliable cloud compilation
 const session = require('express-session');
 
 const app = express();
@@ -11,7 +11,7 @@ app.set('trust proxy', 1);
 
 // CORS configuration supporting cross-site credentials (Cloudflare frontend to Render backend)
 app.use(cors({
-  origin: true, // Reflects the incoming request origin dynamically
+  origin: true, 
   credentials: true
 }));
 
@@ -23,11 +23,11 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'dikgang_sol_plaatjie_secure_secret_2026',
   resave: false,
   saveUninitialized: false,
-  proxy: true, // Trust Render's proxy for secure cookies
+  proxy: true, 
   cookie: { 
-    secure: true,   // Required for cross-site cookies in production (HTTPS)
+    secure: true,   
     httpOnly: true,
-    sameSite: 'none', // Required when frontend and backend are on different domains (Cloudflare & Render)
+    sameSite: 'none', 
     maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days session validity
   }
 }));

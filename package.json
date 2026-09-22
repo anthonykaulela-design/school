@@ -1,7 +1,7 @@
 {
-  "name": "dikgang-sol-plaatjie",
+  "name": "dikgang-tsa-sol-plaatjie",
   "version": "1.0.0",
-  "description": "Dikgang tsa Sol Plaatjie Online News Portal & Mobile App Backend",
+  "description": "Full-stack digital news website backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,9 +9,8 @@
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-session": "^1.18.0",
-    "mysql2": "^3.9.7"
+    "mysql2": "^3.9.2"
   }
 }
