@@ -241,53 +241,54 @@ app.post('/api/admin/ads/:id/activate', async (req, res) => {
     }
 });
 
-router.post('/ads', (req, res) => {
-    // Accept both 'ad_type' or 'type' from the request body to prevent mismatches
-    const { 
-        title, 
-        ad_type, 
-        type, 
-        link_url, 
-        media_url, 
-        creator_id, 
-        business_name, 
-        email, 
-        whatsapp, 
-        address, 
-        payment_proof_url 
-    } = req.body;
+// --- POST AD PLACEMENT ENDPOINT (Fixed) ---
+app.post('/api/ads', async (req, res) => {
+    try {
+        // Accept both 'ad_type' or 'type' from the request body to prevent mismatches
+        const { 
+            title, 
+            ad_type, 
+            type, 
+            link_url, 
+            media_url, 
+            creator_id, 
+            business_name, 
+            email, 
+            whatsapp, 
+            address, 
+            payment_proof_url 
+        } = req.body;
 
-    const adTypeVal = ad_type || type || 'banner';
-    const adId = 'AD_' + Date.now();
+        const adTypeVal = ad_type || type || 'banner';
+        const adId = 'AD_' + Date.now();
 
-    const query = `
-        INSERT INTO ad_placements 
-        (ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url, status) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
+        const query = `
+            INSERT INTO ad_placements 
+            (ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url, status) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
 
-    const values = [
-        adId,
-        title,
-        adTypeVal,
-        link_url || null,
-        media_url || null,
-        creator_id || null,
-        business_name || null,
-        email || null,
-        whatsapp || null,
-        address || null,
-        payment_proof_url || null,
-        'pending'
-    ];
+        const values = [
+            adId,
+            title,
+            adTypeVal,
+            link_url || null,
+            media_url || null,
+            creator_id || null,
+            business_name || null,
+            email || null,
+            whatsapp || null,
+            address || null,
+            payment_proof_url || null,
+            'pending'
+        ];
 
-    db.query(query, values, (err, result) => {
-        if (err) {
-            console.error("Database insert error:", err);
-            return res.status(500).json({ error: err.message });
-        }
+        await pool.query(query, values);
         res.status(201).json({ success: true, message: 'Ad created successfully', adId });
-    });
+    } catch (err) {
+        console.error("Database insert error:", err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Referrers / Share & Earn
