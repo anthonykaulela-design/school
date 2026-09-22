@@ -137,7 +137,7 @@ app.get('/api/articles', async (req, res) => {
     }
 });
 
-// Get single article by slug
+// Get single article by slug (includes associated ads for this article)
 app.get('/api/articles/:slug', async (req, res) => {
     try {
         const [articles] = await pool.query('SELECT * FROM articles WHERE slug = ?', [req.params.slug]);
@@ -148,13 +148,17 @@ app.get('/api/articles/:slug', async (req, res) => {
         await pool.query('UPDATE articles SET views = views + 1 WHERE id = ?', [article.id]);
 
         const [comments] = await pool.query('SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC', [article.id]);
-        res.json({ article, comments });
+        
+        // Fetch active ads allocated specifically to this article
+        const [ads] = await pool.query('SELECT * FROM ad_placements WHERE article_id = ? AND status = "active"', [article.id]);
+
+        res.json({ article, comments, ads });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Post new article
+// Post new article (Supports WordPress-like embedding via content and video_embed fields)
 app.post('/api/articles', async (req, res) => {
     try {
         const { title, category, content, image_url, image_source, video_embed, journalist_id, journalist_name } = req.body;
@@ -201,13 +205,13 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// Admin Dashboard Data
+// Admin Dashboard Data (Returns ad_placements and referrers with earnings)
 app.get('/api/admin/dashboard', async (req, res) => {
     try {
         const [users] = await pool.query('SELECT * FROM users');
         const [articles] = await pool.query('SELECT * FROM articles ORDER BY created_at DESC');
-        const [ads] = await pool.query('SELECT * FROM ads ORDER BY created_at DESC');
-        const [referrers] = await pool.query('SELECT * FROM referrers');
+        const [ads] = await pool.query('SELECT * FROM ad_placements ORDER BY created_at DESC');
+        const [referrers] = await pool.query('SELECT * FROM referrers ORDER BY earnings DESC');
         res.json({ users, articles, ads, referrers });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -234,17 +238,40 @@ app.post('/api/admin/articles/:id/publish', async (req, res) => {
 
 app.post('/api/admin/ads/:id/activate', async (req, res) => {
     try {
-        await pool.query('UPDATE ads SET status = "active" WHERE id = ?', [req.params.id]);
+        await pool.query('UPDATE ad_placements SET status = "active" WHERE id = ?', [req.params.id]);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// --- POST AD PLACEMENT ENDPOINT (Fixed) ---
+// --- ADMIN: ALLOCATE OR REALLOCATE AD TO A NEWS ARTICLE ---
+app.post('/api/admin/ads/:id/allocate', async (req, res) => {
+    try {
+        const { article_id } = req.body; // Can be article ID or null to unallocate
+        await pool.query('UPDATE ad_placements SET article_id = ? WHERE id = ?', [article_id || null, req.params.id]);
+        res.json({ success: true, message: 'Ad placement allocation updated successfully' });
+    } catch (err) {
+        console.error("Ad allocation error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ADMIN: UPDATE REFERRER EARNINGS ---
+app.post('/api/admin/referrers/:id/earnings', async (req, res) => {
+    try {
+        const { earnings } = req.body;
+        await pool.query('UPDATE referrers SET earnings = ? WHERE id = ?', [earnings, req.params.id]);
+        res.json({ success: true, message: 'Referrer earnings updated successfully' });
+    } catch (err) {
+        console.error("Referrer earnings update error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- POST AD PLACEMENT ENDPOINT ---
 app.post('/api/ads', async (req, res) => {
     try {
-        // Accept both 'ad_type' or 'type' from the request body to prevent mismatches
         const { 
             title, 
             ad_type, 
@@ -256,7 +283,8 @@ app.post('/api/ads', async (req, res) => {
             email, 
             whatsapp, 
             address, 
-            payment_proof_url 
+            payment_proof_url,
+            article_id 
         } = req.body;
 
         const adTypeVal = ad_type || type || 'banner';
@@ -264,8 +292,8 @@ app.post('/api/ads', async (req, res) => {
 
         const query = `
             INSERT INTO ad_placements 
-            (ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url, status) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url, status, article_id) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
         `;
 
         const values = [
@@ -280,7 +308,7 @@ app.post('/api/ads', async (req, res) => {
             whatsapp || null,
             address || null,
             payment_proof_url || null,
-            'pending'
+            article_id || null
         ];
 
         await pool.query(query, values);
