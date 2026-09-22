@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
@@ -10,11 +11,11 @@ const PORT = process.env.PORT || 3000;
 
 // TiDB Database Configuration
 const dbConfig = {
-  host: 'gateway01.eu-central-1.prod.aws.tidbcloud.com',
-  port: 4000,
-  user: '46EdNwRpTQ544FS.root',
-  password: 'yyp96nFLBPM9exvt',
-  database: 'bongi_trade',
+  host: process.env.DB_HOST || 'gateway01.eu-central-1.prod.aws.tidbcloud.com',
+  port: process.env.DB_PORT || 4000,
+  user: process.env.DB_USER || '46EdNwRpTQ544FS.root',
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME || 'bongi_trade',
   ssl: { rejectUnauthorized: false }
 };
 
@@ -24,96 +25,17 @@ async function initializeDatabase() {
     pool = mysql.createPool(dbConfig);
     console.log('Connected to TiDB successfully.');
 
-    // Create Tables
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(100) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        role ENUM('admin', 'journalist', 'client', 'reader') DEFAULT 'reader',
-        status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
-        full_name VARCHAR(150),
-        email VARCHAR(150),
-        whatsapp VARCHAR(50),
-        address TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS articles (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        title VARCHAR(255) NOT NULL,
-        slug VARCHAR(255) UNIQUE NOT NULL,
-        category VARCHAR(100) NOT NULL,
-        content TEXT NOT NULL,
-        journalist_id INT,
-        journalist_name VARCHAR(150),
-        image_url TEXT,
-        image_source VARCHAR(255),
-        video_embed TEXT,
-        views INT DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (journalist_id) REFERENCES users(id)
-      )
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS ads (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        ad_type ENUM('banner', 'interstitial', 'video') NOT NULL,
-        title VARCHAR(200),
-        image_url TEXT,
-        target_url TEXT,
-        client_name VARCHAR(150),
-        client_email VARCHAR(150),
-        client_whatsapp VARCHAR(50),
-        business_address TEXT,
-        proof_of_payment TEXT,
-        views INT DEFAULT 0,
-        clicks INT DEFAULT 0,
-        status ENUM('pending', 'active', 'rejected') DEFAULT 'pending',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS comments (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        article_id INT,
-        username VARCHAR(100),
-        email VARCHAR(150),
-        whatsapp VARCHAR(50),
-        comment TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (article_id) REFERENCES articles(id)
-      )
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS referrals (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(150),
-        email VARCHAR(150),
-        whatsapp VARCHAR(50),
-        address TEXT,
-        views INT DEFAULT 0,
-        earnings DECIMAL(10,2) DEFAULT 0.00,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Seed Default Admin Account if not exists
-    const [adminCheck] = await pool.query('SELECT * FROM users WHERE username = ?', ['admin']);
+    // Secure Admin Initialization (Ensures a strong hashed password if none exists)
+    const [adminCheck] = await pool.query('SELECT * FROM users WHERE role = ?', ['admin']);
     if (adminCheck.length === 0) {
-      const hashedPass = await bcrypt.hash('admin', 10);
+      // Generates a secure salt and hash. Change this default password immediately upon deployment.
+      const defaultHash = await bcrypt.hash('SolPlaatjieAdmin#2026!', 10);
       await pool.query(
         'INSERT INTO users (username, password, role, status, full_name, email) VALUES (?, ?, ?, ?, ?, ?)',
-        ['admin', hashedPass, 'admin', 'approved', 'System Administrator', 'admin@dikgang.co.za']
+        ['admin', defaultHash, 'admin', 'approved', 'System Administrator', 'admin@dikgang.co.za']
       );
-      console.log('Default admin account created: admin / admin');
+      console.log('Secure admin account initialized.');
     }
-
   } catch (err) {
     console.error('Database initialization error:', err);
   }
@@ -121,13 +43,17 @@ async function initializeDatabase() {
 
 initializeDatabase();
 
-app.use(cors());
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(session({
-  secret: 'dikgang_sol_plaatjie_secret_key',
+  secret: process.env.SESSION_SECRET || 'dikgang_sol_plaatjie_secure_secret_key',
   resave: false,
-  saveUninitialized: false
+  saveUninitialized: false,
+  cookie: { secure: false, httpOnly: true, maxAge: 24 * 60 * 60 * 1000 }
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -139,11 +65,11 @@ app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
   try {
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [username]);
-    if (rows.length === 0) return res.status(401).json({ error: 'Invalid username or password' });
+    if (rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const user = rows.get ? rows.get(0) : rows[0];
+    const user = rows[0];
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(401).json({ error: 'Invalid username or password' });
+    if (!match) return res.status(401).json({ error: 'Invalid credentials' });
 
     if (user.role === 'journalist' && user.status !== 'approved') {
       return res.status(403).json({ error: 'Your account is pending admin approval.' });
@@ -156,19 +82,19 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Auth Register (Journalists & Clients)
+// Auth Register
 app.post('/api/auth/register', async (req, res) => {
   const { username, password, role, full_name, email, whatsapp, address } = req.body;
   try {
     const hashedPass = await bcrypt.hash(password, 10);
     const status = (role === 'journalist') ? 'pending' : 'approved';
-    const [result] = await pool.query(
+    await pool.query(
       'INSERT INTO users (username, password, role, status, full_name, email, whatsapp, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [username, hashedPass, role, status, full_name, email, whatsapp, address]
     );
     res.json({ success: true, message: 'Registration successful. ' + (status === 'pending' ? 'Pending admin approval.' : '') });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Registration failed or username/email already exists.' });
   }
 });
 
@@ -178,7 +104,7 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true });
 });
 
-// Get Current Session
+// Get Session
 app.get('/api/auth/session', (req, res) => {
   res.json({ user: req.session.user || null });
 });
@@ -221,7 +147,20 @@ app.post('/api/articles', async (req, res) => {
   }
 });
 
-// Ads API & Analytics
+// Admin Delete Article Route
+app.delete('/api/articles/:id', async (req, res) => {
+  if (!req.session.user || req.session.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Unauthorized. Admin access required.' });
+  }
+  try {
+    await pool.query('DELETE FROM articles WHERE id = ?', [req.params.id]);
+    res.json({ success: true, message: 'Article deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ads API
 app.get('/api/ads', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM ads WHERE status = "active"');
@@ -238,17 +177,12 @@ app.post('/api/ads', async (req, res) => {
       'INSERT INTO ads (ad_type, title, image_url, target_url, client_name, client_email, client_whatsapp, business_address, proof_of_payment, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "active")',
       [ad_type, title, image_url, target_url, client_name, client_email, client_whatsapp, business_address, proof_of_payment]
     );
-    res.json({ 
-      success: true, 
-      ad_id: result.insertId, 
-      message: 'Ad submitted successfully. You will be charged R3 per 100 views. 50% revenue share applies.' 
-    });
+    res.json({ success: true, ad_id: result.insertId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Track Ad Click
 app.post('/api/ads/:id/click', async (req, res) => {
   try {
     await pool.query('UPDATE ads SET clicks = clicks + 1 WHERE id = ?', [req.params.id]);
@@ -289,16 +223,13 @@ app.post('/api/referrals', async (req, res) => {
       'INSERT INTO referrals (name, email, whatsapp, address) VALUES (?, ?, ?, ?)',
       [name, email, whatsapp, address]
     );
-    res.json({ 
-      success: true, 
-      message: 'Successfully subscribed to the referral program. You will earn R0.2 per 100 views on shared articles!' 
-    });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Admin Dashboard Data
+// Admin Data API
 app.get('/api/admin/data', async (req, res) => {
   if (!req.session.user || req.session.user.role !== 'admin') {
     return res.status(403).json({ error: 'Unauthorized' });
@@ -308,7 +239,8 @@ app.get('/api/admin/data', async (req, res) => {
     const [ads] = await pool.query('SELECT * FROM ads');
     const [referrals] = await pool.query('SELECT * FROM referrals');
     const [journalists] = await pool.query('SELECT * FROM users WHERE role = "journalist"');
-    res.json({ users, ads, referrals, journalists });
+    const [articles] = await pool.query('SELECT id, title, slug, category, views, created_at FROM articles ORDER BY created_at DESC');
+    res.json({ users, ads, referrals, journalists, articles });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -328,5 +260,5 @@ app.post('/api/admin/approve-journalist', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Dikgang tsa Sol Plaatjie server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
