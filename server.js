@@ -4,374 +4,302 @@ const cors = require('cors');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// Increase JSON and urlencoded payload limits to 50mb to handle base64 image/video uploads
 app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(cors());
+
+// Serve static frontend files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// TiDB / MySQL Database Configuration
-const dbConfig = {
-  host: 'gateway01.eu-central-1.prod.aws.tidbcloud.com',
-  port: 4000,
-  user: '46EdNwRpTQ544FS.root',
-  password: 'yyp96nFLBPM9exvt',
-  database: 'bongi_trade',
-  ssl: { rejectUnauthorized: false }
-};
+// Database Connection Pool (Update with your TiDB/MySQL credentials)
+const pool = mysql.createPool({
+    host: process.env.DB_HOST || 'your_tidb_host',
+    user: process.env.DB_USER || 'your_tidb_user',
+    password: process.env.DB_PASSWORD || 'your_tidb_password',
+    database: process.env.DB_NAME || 'your_tidb_database',
+    port: process.env.DB_PORT || 4000,
+    ssl: { rejectUnauthorized: true },
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+});
 
-let pool;
-
-async function initDB() {
-  try {
-    pool = mysql.createPool(dbConfig);
-    const connection = await pool.getConnection();
-    console.log('Connected to TiDB / MySQL database successfully.');
-
-    // Create Tables with LONGTEXT for direct image and video uploads
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        role ENUM('admin', 'journalist', 'advertiser', 'referrer', 'reader') DEFAULT 'reader',
-        status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
-        full_name VARCHAR(255),
-        email VARCHAR(255),
-        whatsapp VARCHAR(50),
-        address TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS articles (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        title VARCHAR(255) NOT NULL,
-        slug VARCHAR(255) UNIQUE NOT NULL,
-        content LONGTEXT NOT NULL,
-        category VARCHAR(100) NOT NULL,
-        journalist_id INT,
-        journalist_name VARCHAR(255),
-        image_url LONGTEXT,
-        image_source VARCHAR(255),
-        video_embed LONGTEXT,
-        status ENUM('pending', 'published') DEFAULT 'pending',
-        views INT DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (journalist_id) REFERENCES users(id) ON DELETE SET NULL
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS comments (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        article_id INT,
-        username VARCHAR(255) NOT NULL,
-        email VARCHAR(255) NOT NULL,
-        whatsapp VARCHAR(50) NOT NULL,
-        comment TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS ads (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        ad_id VARCHAR(50) UNIQUE NOT NULL,
-        title VARCHAR(255) NOT NULL,
-        type ENUM('banner', 'interstitial', 'video') NOT NULL,
-        link_url TEXT NOT NULL,
-        media_url LONGTEXT NOT NULL,
-        creator_id INT,
-        business_name VARCHAR(255),
-        email VARCHAR(255),
-        whatsapp VARCHAR(50),
-        address TEXT,
-        payment_proof_url LONGTEXT,
-        status ENUM('pending', 'active') DEFAULT 'pending',
-        views INT DEFAULT 0,
-        clicks INT DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS referrers (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        email VARCHAR(255) NOT NULL,
-        whatsapp VARCHAR(50) NOT NULL,
-        residential_address TEXT NOT NULL,
-        views_generated INT DEFAULT 0,
-        earnings DECIMAL(10,2) DEFAULT 0.00,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Ensure default admin exists
-    const [adminCheck] = await connection.query("SELECT * FROM users WHERE username = 'admin'");
-    if (adminCheck.length === 0) {
-      await connection.query(
-        "INSERT INTO users (username, password, role, status, full_name, email) VALUES (?, ?, 'admin', 'approved', 'System Administrator', 'admin@dikgangsolplaatjie.co.za')",
-        ['admin', 'admin']
-      );
-      console.log('Default admin created: username: admin, password: admin');
-    }
-
-    connection.release();
-  } catch (err) {
-    console.error('Database initialization error:', err);
-  }
+// Helper: Strip HTML for meta descriptions
+function stripHtml(html) {
+    return (html || '').replace(/<[^>]*>?/gm, '').substring(0, 160);
 }
 
-initDB();
+// --- SERVER-SIDE ARTICLE ROUTE WITH OPEN GRAPH META TAGS ---
+app.get('/article/:slug', async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT * FROM articles WHERE slug = ?', [req.params.slug]);
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        
+        let title = "Dikgang tsa Sol Plaatjie | Local News Agency";
+        let description = "Verified news agency covering Kimberley and the Northern Cape.";
+        let imageUrl = `${baseUrl}/favicon.ico`;
 
-// News Categories
-const CATEGORIES = [
-  'Politics', 'Local News', 'Business', 'Sport', 'Entertainment', 
-  'Opinion', 'Lifestyle', 'Technology', 'Education', 'Crime & Courts'
-];
+        if (rows.length > 0) {
+            const art = rows[0];
+            title = `${art.title} - Dikgang tsa Sol Plaatjie`;
+            description = stripHtml(art.content);
+            if (art.image_url) {
+                if (art.image_url.startsWith('data:image')) {
+                    imageUrl = `${baseUrl}/api/articles/id/${art.id}/image`;
+                } else {
+                    imageUrl = art.image_url;
+                }
+            }
+        }
+
+        // Return HTML with injected Open Graph tags for social media scrapers (WhatsApp, Facebook, Twitter)
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${title}</title>
+    
+    <!-- Open Graph / Social Media Meta Tags for Large Image Preview -->
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="${title}">
+    <meta property="og:description" content="${description}">
+    <meta property="og:image" content="${imageUrl}">
+    <meta property="og:url" content="${baseUrl}${req.originalUrl}">
+    
+    <!-- Twitter / X Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="${title}">
+    <meta name="twitter:description" content="${description}">
+    <meta name="twitter:image" content="${imageUrl}">
+
+    <!-- Redirect normal browser users to main app hash router -->
+    <script>
+        window.location.href = '/#article/${req.params.slug}';
+    </script>
+</head>
+<body style="font-family: sans-serif; text-align: center; padding-top: 50px; background: #f8fafc; color: #1e3a8a;">
+    <h2>Loading Dikgang tsa Sol Plaatjie Article...</h2>
+    <p><a href="/#article/${req.params.slug}">Click here if you are not redirected automatically.</a></p>
+</body>
+</html>`;
+        res.send(html);
+    } catch (err) {
+        res.status(500).sendFile(path.join(__dirname, 'public', 'index.html'));
+    }
+});
+
+// --- BASE64 IMAGE CONVERSION ENDPOINT (Crucial for WhatsApp/Facebook OG scraping) ---
+app.get('/api/articles/id/:id/image', async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT image_url FROM articles WHERE id = ?', [req.params.id]);
+        if (rows.length === 0 || !rows[0].image_url) {
+            return res.status(404).send('Image not found');
+        }
+        const dataUri = rows[0].image_url;
+        if (dataUri.startsWith('data:')) {
+            const matches = dataUri.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+                const mimeType = matches[1];
+                const buffer = Buffer.from(matches[2], 'base64');
+                res.setHeader('Content-Type', mimeType);
+                return res.send(buffer);
+            }
+        }
+        res.redirect(dataUri);
+    } catch (e) {
+        res.status(500).send('Error serving image');
+    }
+});
 
 // --- API ENDPOINTS ---
 
-// Auth: Login / Register
+// Get all articles (with search and category filters)
+app.get('/api/articles', async (req, res) => {
+    try {
+        let query = 'SELECT * FROM articles WHERE status = "published"';
+        let params = [];
+        if (req.query.search) {
+            query += ' AND (title LIKE ? OR content LIKE ?)';
+            params.push(`%${req.query.search}%`, `%${req.query.search}%`);
+        }
+        if (req.query.category) {
+            query += ' AND category = ?';
+            params.push(req.query.category);
+        }
+        query += ' ORDER BY created_at DESC';
+        const [rows] = await pool.query(query, params);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get single article by slug
+app.get('/api/articles/:slug', async (req, res) => {
+    try {
+        const [articles] = await pool.query('SELECT * FROM articles WHERE slug = ?', [req.params.slug]);
+        if (articles.length === 0) return res.status(404).json({ error: 'Article not found' });
+        const article = articles[0];
+
+        // Increment view count
+        await pool.query('UPDATE articles SET views = views + 1 WHERE id = ?', [article.id]);
+
+        const [comments] = await pool.query('SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC', [article.id]);
+        res.json({ article, comments });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Post new article
+app.post('/api/articles', async (req, res) => {
+    try {
+        const { title, category, content, image_url, image_source, video_embed, journalist_id, journalist_name } = req.body;
+        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+        const status = (req.body.status || 'published'); 
+
+        const query = `INSERT INTO articles (title, slug, category, content, image_url, image_source, video_embed, journalist_id, journalist_name, status, views) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`;
+        await pool.query(query, [title, slug, category, content, image_url, image_source, video_embed, journalist_id, journalist_name, status]);
+        res.json({ message: 'Article submitted successfully!', slug });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Categories list
+app.get('/api/categories', (req, res) => {
+    res.json(['Politics', 'Local News', 'Business', 'Sport', 'Entertainment', 'Opinion', 'Lifestyle', 'Technology', 'Education', 'Crime & Courts']);
+});
+
+// Authentication
 app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    const [rows] = await pool.query("SELECT * FROM users WHERE username = ? AND password = ?", [username, password]);
-    if (rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid username or password' });
+    try {
+        const { username, password } = req.body;
+        // Hardcoded admin fallback
+        if (username === 'admin' && password === 'admin') {
+            return res.json({ user: { id: 0, username: 'admin', role: 'admin', full_name: 'System Administrator' } });
+        }
+        const [users] = await pool.query('SELECT * FROM users WHERE username = ? AND password = ?', [username, password]);
+        if (users.length === 0) return res.status(401).json({ error: 'Invalid username or password' });
+        res.json({ user: users[0] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    const user = rows[0];
-    if (user.role === 'journalist' && user.status !== 'approved') {
-      return res.status(403).json({ error: 'Your journalist account is pending admin approval.' });
-    }
-    res.json({ success: true, user });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 });
 
 app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { username, password, role, full_name, email, whatsapp, address } = req.body;
-    const status = (role === 'journalist') ? 'pending' : 'approved';
-    await pool.query(
-      "INSERT INTO users (username, password, role, status, full_name, email, whatsapp, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [username, password, role, status, full_name, email, whatsapp, address]
-    );
-    res.json({ success: true, message: 'Registration successful. ' + (status === 'pending' ? 'Pending admin approval.' : '') });
-  } catch (err) {
-    res.status(500).json({ error: 'Username already exists or invalid data.' });
-  }
+    try {
+        const { full_name, username, password, email, whatsapp, address, role } = req.body;
+        const query = `INSERT INTO users (full_name, username, password, email, whatsapp, address, role, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`;
+        await pool.query(query, [full_name, username, password, email, whatsapp, address, role || 'journalist']);
+        res.json({ message: 'Registration submitted successfully! Awaiting admin approval.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Admin Dashboard Data
 app.get('/api/admin/dashboard', async (req, res) => {
-  try {
-    const [users] = await pool.query("SELECT id, username, role, status, full_name, email, whatsapp, address, created_at FROM users");
-    const [articles] = await pool.query("SELECT a.*, u.username as journalist_username FROM articles a LEFT JOIN users u ON a.journalist_id = u.id ORDER BY a.created_at DESC");
-    const [ads] = await pool.query("SELECT * FROM ads ORDER BY created_at DESC");
-    const [referrers] = await pool.query("SELECT * FROM referrers ORDER BY created_at DESC");
-    
-    const pending_journalists = users.filter(u => u.role === 'journalist' && u.status === 'pending');
-    const approved_journalists = users.filter(u => u.role === 'journalist' && u.status === 'approved');
-
-    res.json({ 
-      users, 
-      pending_journalists, 
-      approved_journalists, 
-      pendingJournalists: pending_journalists, 
-      approvedJournalists: approved_journalists, 
-      articles, 
-      ads, 
-      referrers 
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        const [users] = await pool.query('SELECT * FROM users');
+        const [articles] = await pool.query('SELECT * FROM articles ORDER BY created_at DESC');
+        const [ads] = await pool.query('SELECT * FROM ads ORDER BY created_at DESC');
+        const [referrers] = await pool.query('SELECT * FROM referrers');
+        res.json({ users, articles, ads, referrers });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Admin: Approve / Reject Journalist
 app.post('/api/admin/users/:id/status', async (req, res) => {
-  try {
-    const { status } = req.body; 
-    await pool.query("UPDATE users SET status = ? WHERE id = ?", [status, req.params.id]);
-    res.json({ success: true, message: `User status updated to ${status}.` });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Articles Management
-app.get('/api/articles', async (req, res) => {
-  try {
-    const { category, search } = req.query;
-    let query = "SELECT * FROM articles WHERE status = 'published'";
-    let params = [];
-    if (category) {
-      query += " AND category = ?";
-      params.push(category);
+    try {
+        await pool.query('UPDATE users SET status = ? WHERE id = ?', [req.body.status, req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    if (search) {
-      query += " AND (title LIKE ? OR content LIKE ?)";
-      params.push(`%${search}%`, `%${search}%`);
-    }
-    query += " ORDER BY created_at DESC";
-    const [articles] = await pool.query(query, params);
-    res.json(articles);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/articles/:slug', async (req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT * FROM articles WHERE slug = ?", [req.params.slug]);
-    if (rows.length === 0) return res.status(404).json({ error: 'Article not found' });
-    const article = rows[0];
-    
-    await pool.query("UPDATE articles SET views = views + 1 WHERE id = ?", [article.id]);
-    
-    const [comments] = await pool.query("SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC", [article.id]);
-    
-    res.json({ article, comments });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/articles', async (req, res) => {
-  try {
-    const { title, content, category, journalist_id, journalist_name, image_url, image_source, video_embed } = req.body;
-    
-    let status = 'pending';
-    if (journalist_id) {
-      const [userRows] = await pool.query("SELECT role FROM users WHERE id = ?", [journalist_id]);
-      if (userRows.length > 0 && userRows[0].role === 'admin') {
-        status = 'published';
-      }
-    } else {
-      status = 'published';
-    }
-
-    const baseSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
-    const slug = `${baseSlug}-${Date.now().toString().slice(-6)}`;
-    
-    await pool.query(
-      "INSERT INTO articles (title, slug, content, category, journalist_id, journalist_name, image_url, image_source, video_embed, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [title, slug, content, category, journalist_id || null, journalist_name || 'Admin', image_url, image_source, video_embed, status]
-    );
-    res.json({ success: true, message: status === 'published' ? 'Article published successfully!' : 'Article submitted successfully and pending admin publication.' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 });
 
 app.post('/api/admin/articles/:id/publish', async (req, res) => {
-  try {
-    await pool.query("UPDATE articles SET status = 'published' WHERE id = ?", [req.params.id]);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Comments
-app.post('/api/articles/:id/comments', async (req, res) => {
-  try {
-    const { username, email, whatsapp, comment } = req.body;
-    await pool.query(
-      "INSERT INTO comments (article_id, username, email, whatsapp, comment) VALUES (?, ?, ?, ?, ?)",
-      [req.params.id, username, email, whatsapp, comment]
-    );
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Ads Management & Monetization
-app.get('/api/ads', async (req, res) => {
-  try {
-    const [ads] = await pool.query("SELECT * FROM ads WHERE status = 'active'");
-    res.json(ads);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/ads', async (req, res) => {
-  try {
-    const { title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url } = req.body;
-    const ad_id = 'AD-' + Math.random().toString(36).substring(2, 9).toUpperCase();
-    
-    await pool.query(
-      "INSERT INTO ads (ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
-      [ad_id, title, type, link_url, media_url, creator_id, business_name, email, whatsapp, address, payment_proof_url]
-    );
-    res.json({ 
-      success: true, 
-      ad_id,
-      notification: 'Notice: Clients are charged R3 per 100 views. 50% of ad revenue is retained by Dikgang tsa Sol Plaatjie.' 
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        await pool.query('UPDATE articles SET status = "published" WHERE id = ?', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.post('/api/admin/ads/:id/activate', async (req, res) => {
-  try {
-    await pool.query("UPDATE ads SET status = 'active' WHERE id = ?", [req.params.id]);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        await pool.query('UPDATE ads SET status = "active" WHERE id = ?', [req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Ads
+app.get('/api/ads', async (req, res) => {
+    try {
+        const [ads] = await pool.query('SELECT * FROM ads WHERE status = "active"');
+        res.json(ads);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/ads', async (req, res) => {
+    try {
+        const { business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address, creator_id } = req.body;
+        const ad_id = 'AD-' + Math.floor(100000 + Math.random() * 900000);
+        const query = `INSERT INTO ads (ad_id, business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address, creator_id, status, views, clicks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0)`;
+        await pool.query(query, [ad_id, business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address, creator_id]);
+        res.json({ message: 'Ad submitted successfully', ad_id });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.post('/api/ads/:id/track', async (req, res) => {
-  try {
-    const { action } = req.body; 
-    if (action === 'view') {
-      await pool.query("UPDATE ads SET views = views + 1 WHERE id = ?", [req.params.id]);
-    } else if (action === 'click') {
-      await pool.query("UPDATE ads STR clicks = clicks + 1 WHERE id = ?", [req.params.id]); // Note: corrected SQL syntax in your app if needed
+    try {
+        const { action } = req.body;
+        if (action === 'view') {
+            await pool.query('UPDATE ads SET views = views + 1 WHERE id = ?', [req.params.id]);
+        } else if (action === 'click') {
+            await pool.query('UPDATE ads SET clicks = clicks + 1 WHERE id = ?', [req.params.id]);
+        }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 });
 
 // Referrers / Share & Earn
 app.post('/api/referrers', async (req, res) => {
-  try {
-    const { name, email, whatsapp, residential_address } = req.body;
-    await pool.query(
-      "INSERT INTO referrers (name, email, whatsapp, residential_address) VALUES (?, ?, ?, ?)",
-      [name, email, whatsapp, residential_address]
-    );
-    res.json({ 
-      success: true, 
-      notification: 'Successfully subscribed to Share & Earn! You will earn R0.2 per 100 views generated by your shared links.' 
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        const { name, email, whatsapp, residential_address } = req.body;
+        await pool.query('INSERT INTO referrers (name, email, whatsapp, residential_address, earnings) VALUES (?, ?, ?, ?, 0.00)', [name, email, whatsapp, residential_address]);
+        res.json({ notification: 'Successfully joined Share & Earn!' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.get('/api/categories', (req, res) => {
-  res.json(CATEGORIES);
+// Comments
+app.post('/api/articles/:id/comments', async (req, res) => {
+    try {
+        const { username, email, whatsapp, comment } = req.body;
+        await pool.query('INSERT INTO comments (article_id, username, email, whatsapp, comment) VALUES (?, ?, ?, ?, ?)', [req.params.id, username, email, whatsapp, comment]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Serve Frontend SPA
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Dikgang tsa Sol Plaatjie server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
