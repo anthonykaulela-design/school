@@ -76,6 +76,35 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Username or email is already registered.' });
     }
 
+
+// Automatically seed a default root admin on server startup if none exists
+async function seedRootAdmin() {
+  try {
+    const [rows] = await db.query('SELECT COUNT(*) as count FROM `users`');
+    if (rows[0].count === 0) {
+      const hashedPassword = await bcrypt.hash('Admin@2026!', 10);
+      await db.query(
+        'INSERT INTO `users` (`username`, `password`, `role`, `status`, `full_name`, `email`) VALUES (?, ?, ?, ?, ?, ?)',
+        ['admin', hashedPassword, 'admin', 'approved', 'Root Administrator', 'admin@solplaatjie.news']
+      );
+      console.log('✅ Default root admin seeded successfully: username "admin", password "Admin@2026!"');
+    }
+  } catch (err) {
+    console.error('❌ Error seeding root admin:', err.message);
+  }
+}
+
+// Test database connection and run seeder on startup
+db.getConnection()
+  .then(async conn => {
+    console.log('Successfully connected to TiDB Cloud database.');
+    conn.release();
+    await seedRootAdmin(); // Automatically creates the admin if table is empty
+  })
+  .catch(err => {
+    console.error('Database connection failed:', err.message);
+  });
+
     // Check if the database table is empty to bootstrap the initial administrator
     const [rows] = await db.query('SELECT COUNT(*) as count FROM `users`');
     const isFirstUser = rows[0].count === 0;
