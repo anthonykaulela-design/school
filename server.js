@@ -8,7 +8,6 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Database Connection Pool configuration (supports MySQL & TiDB)
-// Database Connection Pool configuration updated for TiDB Cloud Security
 const pool = mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
@@ -104,6 +103,16 @@ async function initDB() {
             )
         `);
 
+        // New Subscribers Table for News Notifications
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS subscribers (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                whatsapp VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
         // Ensure default admin user exists (admin / admin)
         const [adminCheck] = await connection.query('SELECT * FROM users WHERE username = ?', ['admin']);
         if (adminCheck.length === 0) {
@@ -161,16 +170,51 @@ app.get('/api/articles', async (req, res) => {
     }
 });
 
+// Create Article & Dispatch Notifications to Subscribers
+app.post('/api/articles', async (req, res) => {
+    try {
+        const { title, slug, category, content, image_url, image_source, pdf_url, journalist_name, pinned_ad_id } = req.body;
+
+        if (!title || !slug || !category || !content) {
+            return res.status(400).json({ error: 'Missing required article fields (title, slug, category, content)' });
+        }
+
+        const [result] = await pool.query(
+            `INSERT INTO articles (title, slug, category, content, image_url, image_source, pdf_url, journalist_name, pinned_ad_id) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [title, slug, category, content, image_url || null, image_source || null, pdf_url || null, journalist_name || 'Staff Reporter', pinned_ad_id || null]
+        );
+
+        const newArticleId = result.insertId;
+
+        // Fetch all newsletter subscribers for notifications
+        const [subscribers] = await pool.query('SELECT * FROM subscribers');
+        
+        // Dispatch notifications (Logs alert; ready to plug in Nodemailer or Twilio)
+        subscribers.forEach(sub => {
+            console.log(`[NOTIFICATION DISPATCH] Alerting subscriber ${sub.email} about new article: "${title}"`);
+            // TODO: Integrate your mailing/SMS provider here (e.g., Nodemailer, EmailJS, or Twilio)
+        });
+
+        res.status(201).json({ 
+            success: true, 
+            message: 'Article created successfully and notifications dispatched to subscribers.',
+            articleId: newArticleId 
+        });
+    } catch (err) {
+        console.error('Error creating article:', err);
+        res.status(500).json({ error: 'Internal server error while creating article' });
+    }
+});
+
 // DELETE endpoint for articles
 app.delete('/api/articles/:id', async (req, res) => {
     const articleId = req.params.id;
 
     try {
-        // Execute the delete query using your database connection pool (pool instead of undefined db)
         const query = 'DELETE FROM articles WHERE id = ?';
         const [result] = await pool.query(query, [articleId]);
 
-        // Check if any row was actually deleted
         if (result.affectedRows === 0) {
             return res.status(404).json({ 
                 success: false, 
@@ -391,6 +435,45 @@ app.post('/api/referrers', async (req, res) => {
     }
 });
 
+// --- NEW: Newsletter / Notification Subscribers Endpoints ---
+
+// Subscribe to News Notifications
+app.post('/api/subscribers', async (req, res) => {
+    try {
+        const { email, whatsapp } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ error: 'Email address is required.' });
+        }
+
+        const [existing] = await pool.query('SELECT * FROM subscribers WHERE email = ?', [email]);
+        if (existing.length > 0) {
+            return res.status(400).json({ error: 'This email is already subscribed to news notifications!' });
+        }
+
+        await pool.query(
+            'INSERT INTO subscribers (email, whatsapp) VALUES (?, ?)',
+            [email, whatsapp || '']
+        );
+
+        res.status(201).json({ success: true, message: 'Successfully subscribed to news notifications!' });
+    } catch (err) {
+        console.error('Error subscribing to notifications:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get all subscribers (Admin)
+app.get('/api/subscribers', async (req, res) => {
+    try {
+        const [subscribers] = await pool.query('SELECT * FROM subscribers ORDER BY created_at DESC');
+        res.json(subscribers);
+    } catch (err) {
+        console.error('Error fetching subscribers:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // 13. Admin Dashboard endpoint
 app.get('/api/admin/dashboard', async (req, res) => {
     try {
@@ -398,8 +481,9 @@ app.get('/api/admin/dashboard', async (req, res) => {
         const [articles] = await pool.query('SELECT * FROM articles ORDER BY created_at DESC');
         const [ads] = await pool.query('SELECT * FROM ads ORDER BY created_at DESC');
         const [referrers] = await pool.query('SELECT * FROM referrers ORDER BY created_at DESC');
+        const [subscribers] = await pool.query('SELECT * FROM subscribers ORDER BY created_at DESC');
 
-        res.json({ users, articles, ads, referrers });
+        res.json({ users, articles, ads, referrers, subscribers });
     } catch (err) {
         console.error('Error fetching admin dashboard:', err);
         res.status(500).json({ error: 'Internal server error' });
