@@ -1,12 +1,17 @@
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
+const path = require('path');
 
 const app = express();
 
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Supports base64 image and PDF uploads
+
+// Serve frontend static files from the same directory as server.js
+// This fixes the 'file://' security origin and CORS errors when visiting http://localhost:3000
+app.use(express.static(path.join(__dirname)));
 
 // Database Connection Pool Configuration
 const dbConfig = {
@@ -188,20 +193,22 @@ app.get('/api/articles', async (req, res) => {
     }
 });
 
-// 3. Single Article & View Increment
+// 3. Single Article & View Increment (Supports slug or fallback ID matching)
 app.get('/api/articles/:slug', async (req, res) => {
     try {
-        const slug = req.params.slug;
+        const identifier = req.params.slug;
         
-        // Increment views
-        await pool.execute('UPDATE articles SET views = views + 1 WHERE slug = ?', [slug]);
-
-        const [articles] = await pool.execute('SELECT * FROM articles WHERE slug = ?', [slug]);
+        // Try fetching by exact slug first, or fallback to matching ID if numeric/identifier matches
+        let [articles] = await pool.execute('SELECT * FROM articles WHERE slug = ? OR id = ?', [identifier, identifier]);
+        
         if (articles.length === 0) {
             return res.status(404).json({ error: 'Article not found' });
         }
 
         const article = articles[0];
+
+        // Increment views
+        await pool.execute('UPDATE articles SET views = views + 1 WHERE id = ?', [article.id]);
 
         // Fetch comments
         const [comments] = await pool.execute('SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC', [article.id]);
