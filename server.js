@@ -10,20 +10,20 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Database Connection Pool (Compatible with MySQL and TiDB)
-const mysql = require('mysql2/promise');
-
+// Database Connection Pool (Configured with SSL for TiDB Cloud Serverless)
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 4000,
-  // Add this ssl configuration object:
-  ssl: {
-    minVersion: 'TLSv1.2',
-    rejectUnauthorized: true
-  }
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'sol_plaatjie_news',
+    port: process.env.DB_PORT || 4000,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    ssl: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+    }
 });
 
 // Helper function to generate URL slug
@@ -78,7 +78,6 @@ app.get('/api/articles', async (req, res) => {
         query += ` ORDER BY a.created_at DESC`;
         const [rows] = await pool.query(query, params);
 
-        // Format pinned ad structure for frontend
         const articles = rows.map(row => {
             let article = { ...row };
             if (row.ad_id) {
@@ -107,7 +106,6 @@ app.get('/api/articles', async (req, res) => {
 
 app.get('/api/articles/:slug', async (req, res) => {
     try {
-        const { slug } = req.slug || req.params.slug;
         const [articles] = await pool.query(`
             SELECT a.*, 
                    ad.id as ad_id, ad.business_name as ad_business_name, ad.title as ad_title, 
@@ -156,8 +154,6 @@ app.post('/api/articles', async (req, res) => {
     try {
         const { title, category, content, image_url, image_source, journalist_id, journalist_name } = req.body;
         const slug = generateSlug(title);
-        
-        // Admins publish instantly, journalists require approval/pending status
         const status = journalist_id ? 'pending' : 'published';
 
         const [result] = await pool.query(
@@ -232,7 +228,7 @@ app.post('/api/ads', async (req, res) => {
 app.post('/api/ads/:id/track', async (req, res) => {
     try {
         const adId = req.params.id;
-        const { action } = req.body; // 'view' or 'click'
+        const { action } = req.body;
         if (action === 'click') {
             await pool.query('UPDATE ads SET clicks = clicks + 1 WHERE id = ?', [adId]);
         } else {
@@ -331,7 +327,7 @@ app.get('/api/admin/dashboard', async (req, res) => {
 app.post('/api/admin/users/:id/status', async (req, res) => {
     try {
         const userId = req.params.id;
-        const { status } = req.body; // 'approved' or 'rejected'
+        const { status } = req.body;
         await pool.query('UPDATE users SET status = ? WHERE id = ?', [status, userId]);
         res.json({ message: `User status updated to ${status}` });
     } catch (err) {
