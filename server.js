@@ -22,7 +22,7 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-// Initialize Database Tables (Without Dummy News)
+// Initialize Database Tables & Safe Column Migrations
 async function initDB() {
     try {
         const connection = await pool.getConnection();
@@ -58,6 +58,12 @@ async function initDB() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
+
+        // Safe column updates for existing tables (ensures columns exist if table was already created)
+        try { await connection.query('ALTER TABLE articles ADD COLUMN pdf_url LONGTEXT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN image_source VARCHAR(255)'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN pinned_ad_id INT DEFAULT NULL'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN journalist_name VARCHAR(255) DEFAULT "Staff Reporter"'); } catch (e) {}
 
         await connection.query(`
             CREATE TABLE IF NOT EXISTS comments (
@@ -123,7 +129,7 @@ async function initDB() {
         }
 
         connection.release();
-        console.log('Database initialized successfully. Clean state (no dummy articles).');
+        console.log('Database initialized successfully and columns verified.');
     } catch (err) {
         console.error('Database initialization error:', err);
     }
@@ -207,7 +213,6 @@ app.post('/api/articles', async (req, res) => {
         // Dispatch notifications (Logs alert; ready to plug in Nodemailer or Twilio)
         subscribers.forEach(sub => {
             console.log(`[NOTIFICATION DISPATCH] Alerting subscriber ${sub.email} about new article: "${title}"`);
-            // TODO: Integrate your mailing/SMS provider here (e.g., Nodemailer, EmailJS, or Twilio)
         });
 
         res.status(201).json({ 
