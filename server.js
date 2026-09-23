@@ -209,7 +209,6 @@ app.get('/api/ads', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch ads' });
     }
 });
-
 app.post('/api/ads', async (req, res) => {
     try {
         const { business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address } = req.body;
