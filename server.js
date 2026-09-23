@@ -161,6 +161,37 @@ app.get('/api/articles', async (req, res) => {
     }
 });
 
+// DELETE endpoint for articles
+app.delete('/api/articles/:id', async (req, res) => {
+    const articleId = req.params.id;
+
+    try {
+        // Execute the delete query using your database connection pool
+        const query = 'DELETE FROM articles WHERE id = ?';
+        const [result] = await db.execute(query, [articleId]);
+
+        // Check if any row was actually deleted
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'Article not found.' 
+            });
+        }
+
+        return res.status(200).json({ 
+            success: true, 
+            message: 'Article deleted successfully.' 
+        });
+
+    } catch (error) {
+        console.error('Database error during article deletion:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'Internal server error while deleting the article.' 
+        });
+    }
+});
+
 // 2. Get dynamic categories list
 app.get('/api/categories', async (req, res) => {
     try {
