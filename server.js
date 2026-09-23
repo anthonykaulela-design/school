@@ -171,12 +171,27 @@ app.get('/api/articles', async (req, res) => {
 });
 
 // Create Article & Dispatch Notifications to Subscribers
+// Create Article & Dispatch Notifications to Subscribers (With Auto-Slug Generation)
 app.post('/api/articles', async (req, res) => {
     try {
-        const { title, slug, category, content, image_url, image_source, pdf_url, journalist_name, pinned_ad_id } = req.body;
+        let { title, slug, category, content, image_url, image_source, pdf_url, journalist_name, pinned_ad_id } = req.body;
 
+        // Automatically generate a slug from the title if it's missing
+        if (!slug && title) {
+            slug = title
+                .toLowerCase()
+                .trim()
+                .replace(/[^\w\s-]/g, '')    // Remove non-word chars
+                .replace(/[\s_-]+/g, '-')     // Replace spaces/underscores with hyphens
+                .replace(/^-+|-+$/g, '');     // Trim hyphens
+        }
+
+        // Validate required fields after fallback slug generation
         if (!title || !slug || !category || !content) {
-            return res.status(400).json({ error: 'Missing required article fields (title, slug, category, content)' });
+            return res.status(400).json({ 
+                error: 'Missing required article fields', 
+                received: { title: !!title, slug: !!slug, category: !!category, content: !!content } 
+            });
         }
 
         const [result] = await pool.query(
@@ -187,6 +202,23 @@ app.post('/api/articles', async (req, res) => {
 
         const newArticleId = result.insertId;
 
+        // Fetch all newsletter subscribers for notifications
+        const [subscribers] = await pool.query('SELECT * FROM subscribers');
+        
+        subscribers.forEach(sub => {
+            console.log(`[NOTIFICATION DISPATCH] Alerting subscriber ${sub.email} about new article: "${title}"`);
+        });
+
+        res.status(201).json({ 
+            success: true, 
+            message: 'Article created successfully and notifications dispatched to subscribers.',
+            articleId: newArticleId 
+        });
+    } catch (err) {
+        console.error('Error creating article:', err);
+        res.status(500).json({ error: 'Internal server error while creating article' });
+    }
+});
         // Fetch all newsletter subscribers for notifications
         const [subscribers] = await pool.query('SELECT * FROM subscribers');
         
