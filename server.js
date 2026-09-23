@@ -166,9 +166,9 @@ app.delete('/api/articles/:id', async (req, res) => {
     const articleId = req.params.id;
 
     try {
-        // Execute the delete query using your database connection pool
+        // Execute the delete query using your database connection pool (pool instead of undefined db)
         const query = 'DELETE FROM articles WHERE id = ?';
-        const [result] = await db.execute(query, [articleId]);
+        const [result] = await pool.query(query, [articleId]);
 
         // Check if any row was actually deleted
         if (result.affectedRows === 0) {
