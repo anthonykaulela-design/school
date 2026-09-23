@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Supports base64 image and PDF uploads
 
-// Database Connection Pool (Configurable via environment variables or direct strings)
+// Database Connection Pool Configuration
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
@@ -19,6 +19,14 @@ const dbConfig = {
     connectionLimit: 10,
     queueLimit: 0
 };
+
+// Automatically enable SSL/TLS transport required by TiDB Cloud serverless clusters
+if (process.env.DB_HOST && !process.env.DB_HOST.includes('localhost') && !process.env.DB_HOST.includes('127.0.0.1')) {
+    dbConfig.ssl = {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+    };
+}
 
 const pool = mysql.createPool(dbConfig);
 
@@ -183,7 +191,7 @@ app.get('/api/articles', async (req, res) => {
 // 3. Single Article & View Increment
 app.get('/api/articles/:slug', async (req, res) => {
     try {
-        const { slug } = req.slug || req.params.slug;
+        const slug = req.params.slug;
         
         // Increment views
         await pool.execute('UPDATE articles SET views = views + 1 WHERE slug = ?', [slug]);
