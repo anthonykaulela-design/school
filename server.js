@@ -3,350 +3,367 @@ const cors = require('cors');
 const mysql = require('mysql2/promise');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '50mb' })); // Supports base64 image and PDF uploads
 
-// Database Connection Pool (Configured with SSL for TiDB Cloud Serverless)
-const pool = mysql.createPool({
+// Database Connection Pool (Configurable via environment variables or direct strings)
+const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
     database: process.env.DB_NAME || 'sol_plaatjie_news',
-    port: process.env.DB_PORT || 4000,
+    port: process.env.DB_PORT || 3306,
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0,
-    ssl: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: true
+    queueLimit: 0
+};
+
+const pool = mysql.createPool(dbConfig);
+
+// Initialize Database Tables if they do not exist
+async function initializeDatabase() {
+    try {
+        const connection = await pool.getConnection();
+        
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS categories (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE
+            )
+        `);
+
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                full_name VARCHAR(150) NOT NULL,
+                username VARCHAR(50) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
+                email VARCHAR(150) NOT NULL,
+                whatsapp VARCHAR(20),
+                address TEXT,
+                role ENUM('admin', 'journalist', 'reader') DEFAULT 'reader',
+                status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS articles (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                slug VARCHAR(255) NOT NULL UNIQUE,
+                category VARCHAR(100) NOT NULL,
+                content TEXT NOT NULL,
+                image_url TEXT,
+                image_source VARCHAR(150),
+                pdf_url TEXT,
+                journalist_name VARCHAR(150),
+                views INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                pinned_ad_id INT DEFAULT NULL
+            )
+        `);
+
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS comments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                article_id INT NOT NULL,
+                username VARCHAR(100) NOT NULL,
+                email VARCHAR(150),
+                whatsapp VARCHAR(20),
+                comment TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+            )
+        `);
+
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS ads (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                business_name VARCHAR(150) NOT NULL,
+                title VARCHAR(200) NOT NULL,
+                type ENUM('banner', 'sidebar', 'sponsored') DEFAULT 'banner',
+                link_url TEXT,
+                media_url TEXT,
+                payment_proof_url TEXT,
+                email VARCHAR(150),
+                whatsapp VARCHAR(20),
+                address TEXT,
+                views INT DEFAULT 0,
+                clicks INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS referrers (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(150) NOT NULL,
+                email VARCHAR(150) NOT NULL,
+                whatsapp VARCHAR(20) NOT NULL,
+                residential_address TEXT NOT NULL,
+                earnings DECIMAL(10,2) DEFAULT 0.00,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Seed default categories if empty
+        const [existingCategories] = await connection.execute('SELECT COUNT(*) as count FROM categories');
+        if (existingCategories[0].count === 0) {
+            const defaultCategories = [
+                'Trending', 'Politics', 'Local News', 'Business', 'Sport', 
+                'Entertainment', 'Opinion', 'Technology', 'Education', 
+                'Crime & Courts', 'Municipal Governance'
+            ];
+            for (const cat of defaultCategories) {
+                await connection.execute('INSERT IGNORE INTO categories (name) VALUES (?)', [cat]);
+            }
+        }
+
+        // Seed default admin user if empty
+        const [existingUsers] = await connection.execute('SELECT COUNT(*) as count FROM users');
+        if (existingUsers[0].count === 0) {
+            await connection.execute(
+                'INSERT INTO users (full_name, username, password, email, whatsapp, address, role, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                ['System Administrator', 'admin', 'admin123', 'admin@solplaatjienews.co.za', '0820000000', 'Kimberley', 'admin', 'approved']
+            );
+        }
+
+        connection.release();
+        console.log('Database tables verified and initialized successfully.');
+    } catch (error) {
+        console.error('Database initialization error:', error.message);
+    }
+}
+
+initializeDatabase();
+
+// ==========================================
+// API ROUTES
+// ==========================================
+
+// 1. Categories
+app.get('/api/categories', async (req, res) => {
+    try {
+        const [rows] = await pool.execute('SELECT name FROM categories');
+        res.json(rows.map(r => r.name));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Helper function to generate URL slug
-function generateSlug(title) {
-    return title
-        .toLowerCase()
-        .replace(/[^\w ]+/g, '')
-        .replace(/ +/g, '-') + '-' + Date.now().toString().slice(-4);
-}
-
-// --- CATEGORIES ENDPOINT ---
-app.get('/api/categories', (req, res) => {
-    const categories = [
-        'Trending',
-        'Politics',
-        'Local News',
-        'Business',
-        'Sport',
-        'Entertainment',
-        'Opinion',
-        'Technology',
-        'Education',
-        'Crime & Courts',
-        'Municipal Governance'
-    ];
-    res.json(categories);
-});
-
-// --- ARTICLES ENDPOINTS ---
+// 2. Articles Feed & Search
 app.get('/api/articles', async (req, res) => {
     try {
-        const { search, category } = req.query;
-        let query = `
-            SELECT a.*, 
-                   ad.id as ad_id, ad.business_name as ad_business_name, ad.title as ad_title, 
-                   ad.link_url as ad_link_url, ad.media_url as ad_media_url 
-            FROM articles a 
-            LEFT JOIN ads ad ON a.pinned_ad_id = ad.id 
-            WHERE a.status = 'published'
-        `;
+        const { category, search } = req.query;
+        let query = 'SELECT * FROM articles WHERE 1=1';
         let params = [];
 
-        if (search) {
-            query += ` AND (a.title LIKE ? OR a.content LIKE ?)`;
-            params.push(`%${search}%`, `%${search}%`);
-        }
-        if (category && category !== 'Trending') {
-            query += ` AND a.category = ?`;
+        if (category && category !== 'Trending' && category !== 'All') {
+            query += ' AND category = ?';
             params.push(category);
         }
 
-        query += ` ORDER BY a.created_at DESC`;
-        const [rows] = await pool.query(query, params);
+        if (search) {
+            query += ' AND (title LIKE ? OR content LIKE ?)';
+            params.push(`%${search}%`, `%${search}%`);
+        }
 
-        const articles = rows.map(row => {
-            let article = { ...row };
-            if (row.ad_id) {
-                article.pinned_ad = {
-                    id: row.ad_id,
-                    business_name: row.ad_business_name,
-                    title: row.ad_title,
-                    link_url: row.ad_link_url,
-                    media_url: row.ad_media_url
-                };
-            }
-            delete article.ad_id;
-            delete article.ad_business_name;
-            delete article.ad_title;
-            delete article.ad_link_url;
-            delete article.ad_media_url;
-            return article;
-        });
+        query += ' ORDER BY created_at DESC';
 
-        res.json(articles);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to fetch articles' });
+        const [rows] = await pool.execute(query, params);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
+// 3. Single Article & View Increment
 app.get('/api/articles/:slug', async (req, res) => {
     try {
-        const [articles] = await pool.query(`
-            SELECT a.*, 
-                   ad.id as ad_id, ad.business_name as ad_business_name, ad.title as ad_title, 
-                   ad.link_url as ad_link_url, ad.media_url as ad_media_url 
-            FROM articles a 
-            LEFT JOIN ads ad ON a.pinned_ad_id = ad.id 
-            WHERE a.slug = ?
-        `, [req.params.slug]);
+        const { slug } = req.slug || req.params.slug;
+        
+        // Increment views
+        await pool.execute('UPDATE articles SET views = views + 1 WHERE slug = ?', [slug]);
 
+        const [articles] = await pool.execute('SELECT * FROM articles WHERE slug = ?', [slug]);
         if (articles.length === 0) {
             return res.status(404).json({ error: 'Article not found' });
         }
 
         const article = articles[0];
 
-        // Increment view count
-        await pool.query('UPDATE articles SET views = views + 1 WHERE id = ?', [article.id]);
-        article.views += 1;
-
-        if (article.ad_id) {
-            article.pinned_ad = {
-                id: article.ad_id,
-                business_name: article.ad_business_name,
-                title: article.ad_title,
-                link_url: article.ad_link_url,
-                media_url: article.ad_media_url
-            };
-        }
-        delete article.ad_id;
-        delete article.ad_business_name;
-        delete article.ad_title;
-        delete article.ad_link_url;
-        delete article.ad_media_url;
-
         // Fetch comments
-        const [comments] = await pool.query('SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC', [article.id]);
+        const [comments] = await pool.execute('SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC', [article.id]);
+        
+        // Fetch pinned ad if exists
+        let pinnedAd = null;
+        if (article.pinned_ad_id) {
+            const [ads] = await pool.execute('SELECT * FROM ads WHERE id = ?', [article.pinned_ad_id]);
+            if (ads.length > 0) pinnedAd = ads[0];
+        }
 
-        res.json({ article, comments });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error fetching article' });
+        res.json({ ...article, comments, pinned_ad: pinnedAd });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
+// 4. Create Article (Journalist / Admin)
 app.post('/api/articles', async (req, res) => {
     try {
-        const { title, category, content, image_url, image_source, journalist_id, journalist_name } = req.body;
-        const slug = generateSlug(title);
-        const status = journalist_id ? 'pending' : 'published';
+        const { title, category, content, image_url, image_source, pdf_url, journalist_name } = req.body;
+        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
 
-        const [result] = await pool.query(
-            `INSERT INTO articles (slug, title, category, content, image_url, image_source, journalist_id, journalist_name, status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [slug, title, category, content, image_url, image_source, journalist_id || null, journalist_name || 'Staff Reporter', status]
+        const [result] = await pool.execute(
+            'INSERT INTO articles (title, slug, category, content, image_url, image_source, pdf_url, journalist_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [title, slug, category, content, image_url, image_source, pdf_url, journalist_name || 'Admin Reporter']
         );
 
-        res.json({ message: 'Article submitted successfully', article_id: result.insertId, slug });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to create article' });
+        res.status(201).json({ message: 'Article created successfully', articleId: result.insertId, slug });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
+// 5. Add Comment to Article
 app.post('/api/articles/:id/comments', async (req, res) => {
     try {
         const articleId = req.params.id;
         const { username, email, whatsapp, comment } = req.body;
 
-        await pool.query(
+        await pool.execute(
             'INSERT INTO comments (article_id, username, email, whatsapp, comment) VALUES (?, ?, ?, ?, ?)',
             [articleId, username, email, whatsapp, comment]
         );
 
-        res.json({ message: 'Comment posted successfully' });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to post comment' });
+        res.status(201).json({ message: 'Comment added successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
+// 6. Pin Ad to Article
 app.post('/api/articles/:id/pin-ad', async (req, res) => {
     try {
         const articleId = req.params.id;
         const { ad_id } = req.body;
 
-        await pool.query('UPDATE articles SET pinned_ad_id = ? WHERE id = ?', [ad_id, articleId]);
-        res.json({ message: 'Ad pinned successfully' });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to pin ad' });
+        await pool.execute('UPDATE articles SET pinned_ad_id = ? WHERE id = ?', [ad_id, articleId]);
+        res.json({ message: 'Ad pinned successfully to article' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
-// --- ADS ENDPOINTS ---
+// 7. Advertising Portal
 app.get('/api/ads', async (req, res) => {
     try {
-        const [ads] = await pool.query('SELECT * FROM ads WHERE status = ? ORDER BY created_at DESC', ['active']);
-        res.json(ads);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to fetch ads' });
+        const [rows] = await pool.execute('SELECT * FROM ads ORDER BY created_at DESC');
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
+
 app.post('/api/ads', async (req, res) => {
     try {
         const { business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address } = req.body;
-        const [result] = await pool.query(
-            `INSERT INTO ads (business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address, status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+
+        const [result] = await pool.execute(
+            'INSERT INTO ads (business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [business_name, title, type || 'banner', link_url, media_url, payment_proof_url, email, whatsapp, address]
         );
-        res.json({ message: 'Ad submitted successfully', ad_id: result.insertId });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to submit ad' });
+
+        res.status(201).json({ message: 'Ad submitted successfully', adId: result.insertId });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
+// Track Ad Impressions & Clicks
 app.post('/api/ads/:id/track', async (req, res) => {
     try {
         const adId = req.params.id;
-        const { action } = req.body;
+        const { action } = req.body; // 'view' or 'click'
+
         if (action === 'click') {
-            await pool.query('UPDATE ads SET clicks = clicks + 1 WHERE id = ?', [adId]);
+            await pool.execute('UPDATE ads SET clicks = clicks + 1 WHERE id = ?', [adId]);
         } else {
-            await pool.query('UPDATE ads SET views = views + 1 WHERE id = ?', [adId]);
+            await pool.execute('UPDATE ads SET views = views + 1 WHERE id = ?', [adId]);
         }
-        res.json({ success: true });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Tracking failed' });
+
+        res.json({ message: 'Tracking recorded successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
-// --- AUTHENTICATION & USERS ENDPOINTS ---
+// 8. Authentication (Login & Registration)
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
-        const [users] = await pool.query('SELECT * FROM users WHERE username = ? AND password = ?', [username, password]);
+        const [users] = await pool.execute('SELECT * FROM users WHERE username = ? AND password = ?', [username, password]);
 
         if (users.length === 0) {
             return res.status(401).json({ error: 'Invalid username or password' });
         }
 
         const user = users[0];
-        if (user.role === 'journalist' && user.status !== 'approved') {
-            return res.status(403).json({ error: 'Your journalist account is pending admin approval.' });
+        if (user.status !== 'approved') {
+            return res.status(403).json({ error: 'Account pending admin approval' });
         }
 
-        delete user.password;
-        res.json({ user });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Login error' });
+        res.json({ message: 'Login successful', user: { id: user.id, full_name: user.full_name, username: user.username, role: user.role } });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { full_name, username, password, email, whatsapp, address, role } = req.body;
-        await pool.query(
-            `INSERT INTO users (full_name, username, password, email, whatsapp, address, role, status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
-            [full_name, username, password, email, whatsapp, address, role || 'journalist']
+
+        const [result] = await pool.execute(
+            'INSERT INTO users (full_name, username, password, email, whatsapp, address, role, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [full_name, username, password, email, whatsapp, address, role || 'journalist', 'pending']
         );
-        res.json({ message: 'Journalist registration submitted successfully. Awaiting admin approval.' });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Username or email already exists' });
+
+        res.status(201).json({ message: 'Registration submitted successfully. Awaiting approval.', userId: result.insertId });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
-// --- SHARE & EARN / REFERRERS ENDPOINTS ---
+// 9. Share & Earn Program
 app.get('/api/referrers', async (req, res) => {
     try {
-        const [referrers] = await pool.query('SELECT * FROM referrers');
-        res.json(referrers);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to fetch referrers' });
+        const [rows] = await pool.execute('SELECT * FROM referrers ORDER BY earnings DESC');
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
 app.post('/api/referrers', async (req, res) => {
     try {
         const { name, email, whatsapp, residential_address } = req.body;
-        await pool.query(
-            `INSERT INTO referrers (name, email, whatsapp, residential_address) 
-             VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+
+        const [result] = await pool.execute(
+            'INSERT INTO referrers (name, email, whatsapp, residential_address) VALUES (?, ?, ?, ?)',
             [name, email, whatsapp, residential_address]
         );
-        res.json({ notification: 'Successfully subscribed to Share & Earn program!' });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Referrer subscription failed' });
-    }
-});
 
-// --- ADMIN DASHBOARD & MANAGEMENT ENDPOINTS ---
-app.get('/api/admin/dashboard', async (req, res) => {
-    try {
-        const [users] = await pool.query('SELECT id, username, full_name, email, whatsapp, address, role, status, created_at FROM users');
-        const [articles] = await pool.query(`
-            SELECT a.*, ad.title as ad_title FROM articles a 
-            LEFT JOIN ads ad ON a.pinned_ad_id = ad.id 
-            ORDER BY a.created_at DESC
-        `);
-        const [ads] = await pool.query('SELECT * FROM ads ORDER BY created_at DESC');
-        const [referrers] = await pool.query('SELECT * FROM referrers ORDER BY created_at DESC');
-
-        res.json({ users, articles, ads, referrers });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to load dashboard data' });
-    }
-});
-
-app.post('/api/admin/users/:id/status', async (req, res) => {
-    try {
-        const userId = req.params.id;
-        const { status } = req.body;
-        await pool.query('UPDATE users SET status = ? WHERE id = ?', [status, userId]);
-        res.json({ message: `User status updated to ${status}` });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to update user status' });
-    }
-});
-
-app.post('/api/admin/articles/:id/publish', async (req, res) => {
-    try {
-        const articleId = req.params.id;
-        await pool.query("UPDATE articles SET status = 'published' WHERE id = ?", [articleId]);
-        res.json({ message: 'Article published successfully' });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to publish article' });
+        res.status(201).json({ message: 'Referrer registered successfully', referrerId: result.insertId });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
 // Start Server
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Dikgang tsa Sol Plaatjie Backend Server running on port ${PORT}`);
+    console.log(`Backend server running on port ${PORT}`);
 });
