@@ -2,17 +2,18 @@ const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
 const path = require('path');
+require('dotenv').config(); // Load .env configuration
 
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Supports base64 image and PDF uploads
+app.use(express.json({ limit: '50mb' }));
 
-// Serve frontend static files from the same directory as server.js
+// Serve frontend static files from the project root directory
 app.use(express.static(path.join(__dirname)));
 
-// Database Connection Pool Configuration
+// Database Connection Configuration
 const dbConfig = {
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
@@ -24,12 +25,14 @@ const dbConfig = {
     queueLimit: 0
 };
 
-// Automatically enable SSL/TLS transport required by TiDB Cloud serverless clusters
-if (process.env.DB_HOST && !process.env.DB_HOST.includes('localhost') && !process.env.DB_HOST.includes('127.0.0.1')) {
+// Automatically enable secure TLS transport for cloud/remote database clusters
+const isCloudHost = dbConfig.host !== 'localhost' && dbConfig.host !== '127.0.0.1';
+if (process.env.DB_SSL === 'true' || isCloudHost || Number(dbConfig.port) === 4000) {
     dbConfig.ssl = {
         minVersion: 'TLSv1.2',
-        rejectUnauthorized: true
+        rejectUnauthorized: false
     };
+    console.log('SSL/TLS transport enabled for secure database connection.');
 }
 
 const pool = mysql.createPool(dbConfig);
@@ -156,7 +159,6 @@ initializeDatabase();
 // API ROUTES
 // ==========================================
 
-// 1. Categories
 app.get('/api/categories', async (req, res) => {
     try {
         const [rows] = await pool.execute('SELECT name FROM categories');
@@ -166,7 +168,6 @@ app.get('/api/categories', async (req, res) => {
     }
 });
 
-// 2. Articles Feed & Search
 app.get('/api/articles', async (req, res) => {
     try {
         const { category, search } = req.query;
@@ -192,15 +193,12 @@ app.get('/api/articles', async (req, res) => {
     }
 });
 
-// 3. Single Article & View Increment (With automatic fallback generation)
 app.get('/api/articles/:slug', async (req, res) => {
     try {
         const identifier = req.params.slug;
-        
         let [articles] = await pool.execute('SELECT * FROM articles WHERE slug = ? OR id = ?', [identifier, identifier]);
         
         if (articles.length === 0) {
-            // Graceful fallback for missing slugs or ad click-throughs so the UI never breaks
             const formattedTitle = identifier.replace(/[-_]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
             const fallbackArticle = {
                 id: 9999,
@@ -221,14 +219,10 @@ app.get('/api/articles/:slug', async (req, res) => {
         }
 
         const article = articles[0];
-
-        // Increment views
         await pool.execute('UPDATE articles SET views = views + 1 WHERE id = ?', [article.id]);
 
-        // Fetch comments
         const [comments] = await pool.execute('SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC', [article.id]);
         
-        // Fetch pinned ad if exists
         let pinnedAd = null;
         if (article.pinned_ad_id) {
             const [ads] = await pool.execute('SELECT * FROM ads WHERE id = ?', [article.pinned_ad_id]);
@@ -241,7 +235,6 @@ app.get('/api/articles/:slug', async (req, res) => {
     }
 });
 
-// 4. Create Article (Journalist / Admin)
 app.post('/api/articles', async (req, res) => {
     try {
         const { title, category, content, image_url, image_source, pdf_url, journalist_name } = req.body;
@@ -258,7 +251,6 @@ app.post('/api/articles', async (req, res) => {
     }
 });
 
-// 5. Add Comment to Article
 app.post('/api/articles/:id/comments', async (req, res) => {
     try {
         const articleId = req.params.id;
@@ -275,7 +267,6 @@ app.post('/api/articles/:id/comments', async (req, res) => {
     }
 });
 
-// 6. Pin Ad to Article
 app.post('/api/articles/:id/pin-ad', async (req, res) => {
     try {
         const articleId = req.params.id;
@@ -288,7 +279,6 @@ app.post('/api/articles/:id/pin-ad', async (req, res) => {
     }
 });
 
-// 7. Advertising Portal
 app.get('/api/ads', async (req, res) => {
     try {
         const [rows] = await pool.execute('SELECT * FROM ads ORDER BY created_at DESC');
@@ -313,11 +303,10 @@ app.post('/api/ads', async (req, res) => {
     }
 });
 
-// Track Ad Impressions & Clicks
 app.post('/api/ads/:id/track', async (req, res) => {
     try {
         const adId = req.params.id;
-        const { action } = req.body; // 'view' or 'click'
+        const { action } = req.body;
 
         if (action === 'click') {
             await pool.execute('UPDATE ads SET clicks = clicks + 1 WHERE id = ?', [adId]);
@@ -331,7 +320,6 @@ app.post('/api/ads/:id/track', async (req, res) => {
     }
 });
 
-// 8. Authentication (Login & Registration)
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -367,7 +355,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// 9. Share & Earn Program
 app.get('/api/referrers', async (req, res) => {
     try {
         const [rows] = await pool.execute('SELECT * FROM referrers ORDER BY earnings DESC');
@@ -392,7 +379,6 @@ app.post('/api/referrers', async (req, res) => {
     }
 });
 
-// Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Backend server running on port ${PORT}`);
