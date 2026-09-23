@@ -170,7 +170,6 @@ app.get('/api/articles', async (req, res) => {
     }
 });
 
-// Create Article & Dispatch Notifications to Subscribers
 // Create Article & Dispatch Notifications to Subscribers (With Auto-Slug Generation)
 app.post('/api/articles', async (req, res) => {
     try {
@@ -202,23 +201,6 @@ app.post('/api/articles', async (req, res) => {
 
         const newArticleId = result.insertId;
 
-        // Fetch all newsletter subscribers for notifications
-        const [subscribers] = await pool.query('SELECT * FROM subscribers');
-        
-        subscribers.forEach(sub => {
-            console.log(`[NOTIFICATION DISPATCH] Alerting subscriber ${sub.email} about new article: "${title}"`);
-        });
-
-        res.status(201).json({ 
-            success: true, 
-            message: 'Article created successfully and notifications dispatched to subscribers.',
-            articleId: newArticleId 
-        });
-    } catch (err) {
-        console.error('Error creating article:', err);
-        res.status(500).json({ error: 'Internal server error while creating article' });
-    }
-});
         // Fetch all newsletter subscribers for notifications
         const [subscribers] = await pool.query('SELECT * FROM subscribers');
         
