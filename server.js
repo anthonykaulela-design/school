@@ -15,7 +15,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Serve static frontend files from 'public' folder
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Database Connection Pool (Configured for TiDB / MySQL)
+// Database Connection Pool (Configured for TiDB Cloud with SSL)
 const pool = mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
@@ -24,9 +24,12 @@ const pool = mysql.createPool({
     port: process.env.DB_PORT || 4000,
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0
+    queueLimit: 0,
+    ssl: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+    }
 });
-
 // Initialize Database Tables & Seed Sample Articles
 async function initDatabase() {
     try {
