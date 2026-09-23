@@ -1,385 +1,354 @@
 const express = require('express');
 const cors = require('cors');
-const mysql = require('mysql2/promise');
-const path = require('path');
-require('dotenv').config(); // Load .env configuration
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Serve frontend static files from the project root directory
-app.use(express.static(path.join(__dirname)));
+// --- In-Memory Database / Seed Data ---
+let categories = [
+    'Politics',
+    'Local News',
+    'Business',
+    'Sport',
+    'Entertainment',
+    'Opinion',
+    'Technology',
+    'Education',
+    'Crime & Courts',
+    'Municipal Governance'
+];
 
-// Database Connection Configuration
-const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'sol_plaatjie_news',
-    port: process.env.DB_PORT || 3306,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
-};
+let users = [
+    {
+        id: 1,
+        username: 'admin',
+        password: 'admin',
+        full_name: 'System Administrator',
+        email: 'admin@solplaatjie.news',
+        whatsapp: '+27821234567',
+        address: 'Municipal Building, Kimberley',
+        role: 'admin',
+        status: 'approved'
+    },
+    {
+        id: 2,
+        username: 'journalist1',
+        password: 'password123',
+        full_name: 'Tebogo Mokoena',
+        email: 'tebogo@solplaatjie.news',
+        whatsapp: '+27839876543',
+        address: 'Galeshewe, Kimberley',
+        role: 'journalist',
+        status: 'approved'
+    }
+];
 
-// Automatically enable secure TLS transport for cloud/remote database clusters
-const isCloudHost = dbConfig.host !== 'localhost' && dbConfig.host !== '127.0.0.1';
-if (process.env.DB_SSL === 'true' || isCloudHost || Number(dbConfig.port) === 4000) {
-    dbConfig.ssl = {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: false
+let articles = [
+    {
+        id: 1,
+        slug: 'sol-plaatjie-water-pipeline-maintenance-2026',
+        title: 'Sol Plaatjie Municipality Announces Major Water Pipeline Maintenance Across Kimberley CBD and Galeshewe',
+        category: 'Municipal Governance',
+        content: `Sol Plaatjie Local Municipality has announced scheduled emergency water supply interruptions affecting zones 1 through 4 due to main valve replacements near Beaconsfield and the Kimberley CBD.\n\nTechnical services teams will be deployed starting 08:00 to upgrade ageing asbestos-cement pipelines that have contributed to intermittent pressure drops over recent months.\n\nResidents and local businesses are advised to store sufficient water for domestic and commercial use. Water tanker stations will be stationed at Memorial Road Clinic, Galeshewe Circle, and the Civic Centre parking area.`,
+        image_url: 'https://images.unsplash.com/photo-1541888946425-d0fbb18f8f3c?auto=format&fit=crop&w=1200&q=80',
+        image_source: 'Sol Plaatjie Communications Unit',
+        pdf_url: '',
+        views: 1420,
+        journalist_name: 'Tebogo Mokoena',
+        pinned_ad: null,
+        created_at: new Date(Date.now() - 86400000 * 1).toISOString()
+    },
+    {
+        id: 2,
+        slug: 'electricity-capacity-charges-public-hearings',
+        title: 'High Court Rules on Municipal Electricity Tariffs and Public Participation Obligations',
+        category: 'Politics',
+        content: `In a landmark judgment handed down in the Northern Cape Division of the High Court, the court reinforced municipal statutory obligations under the Promotion of Administrative Justice Act (PAJA) regarding public consultation on electricity capacity charges.\n\nCivic associations and public defenders welcomed the ruling, which mandates that the Sol Plaatjie Local Municipality must provide transparent cost-of-supply studies prior to implementing revised tariff structures.\n\nWritten representations and public comments remain open until 15 October 2026.`,
+        image_url: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=1200&q=80',
+        image_source: 'Northern Cape High Court Archives',
+        pdf_url: '',
+        views: 980,
+        journalist_name: 'System Administrator',
+        pinned_ad: null,
+        created_at: new Date(Date.now() - 86400000 * 2).toISOString()
+    },
+    {
+        id: 3,
+        slug: 'kimberley-diamond-league-youth-development',
+        title: 'Kimberley Regional Football Association Launches Youth Sports Development Programme',
+        category: 'Sport',
+        content: `The Kimberley Regional Football Association, in partnership with local civic stakeholders, has officially launched an ambitious youth sports development initiative aimed at nurturing soccer talent across Galeshewe, Ritchies, and surrounding Northern Cape townships.\n\nThe program provides training equipment, certified coaching clinics, and academic support mentorship for aspiring young athletes.\n\nLocal businesses have pledged financial backing to refurbish community pitches ahead of the provincial summer tournament.`,
+        image_url: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?auto=format&fit=crop&w=1200&q=80',
+        image_source: 'Sports Desk Media',
+        pdf_url: '',
+        views: 650,
+        journalist_name: 'Tebogo Mokoena',
+        pinned_ad: null,
+        created_at: new Date(Date.now() - 86400000 * 3).toISOString()
+    }
+];
+
+let comments = [
+    {
+        id: 1,
+        article_id: 1,
+        username: 'Sipho Dlamini',
+        email: 'sipho@example.com',
+        whatsapp: '+27825551234',
+        comment: 'Thank you for the update. Will the water tankers be available in Beaconsfield as well?',
+        created_at: new Date().toISOString()
+    }
+];
+
+let ads = [
+    {
+        id: 1,
+        business_name: 'Kimberley Solar & Electrical',
+        title: 'Reliable Solar Inverter Installations & Backup Power Solutions',
+        type: 'banner',
+        link_url: 'https://example.com',
+        media_url: 'https://images.unsplash.com/photo-1509391365360-86929bf547a5?auto=format&fit=crop&w=600&q=80',
+        payment_proof_url: '',
+        email: 'info@kimberleysolar.co.za',
+        whatsapp: '+27829998888',
+        address: 'Du Toitspan Road, Kimberley',
+        status: 'active',
+        views: 310,
+        clicks: 45
+    }
+];
+
+let referrers = [
+    {
+        id: 1,
+        name: 'Lerato Kgosana',
+        email: 'lerato@example.com',
+        whatsapp: '+27834445555',
+        residential_address: 'Galeshewe, Kimberley',
+        earnings: '12.40'
+    }
+];
+
+// --- API Routes ---
+
+// 1. Get Categories
+app.get('/api/categories', (req, res) => {
+    res.json(categories);
+});
+
+// 2. Get Articles (with optional search and category filters)
+app.get('/api/articles', (req, res) => {
+    let results = [...articles];
+    const { search, category } = req.query;
+
+    if (search) {
+        const query = search.toLowerCase();
+        results = results.filter(a => 
+            a.title.toLowerCase().includes(query) || 
+            a.content.toLowerCase().includes(query)
+        );
+    }
+
+    if (category && category !== 'Trending') {
+        results = results.filter(a => a.category.toLowerCase() === category.toLowerCase());
+    }
+
+    // Sort by newest first
+    results.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    res.json(results);
+});
+
+// 3. Get Single Article by Slug (and increment views)
+app.get('/api/articles/:slug', (req, res) => {
+    const art = articles.find(a => a.slug === req.params.slug);
+    if (!art) {
+        return res.status(404).json({ error: 'Article not found' });
+    }
+    art.views = (art.views || 0) + 1;
+    const artComments = comments.filter(c => c.article_id === art.id);
+    res.json({ article: art, comments: artComments });
+});
+
+// 4. Create Article (Admin / Journalist)
+app.post('/api/articles', (req, res) => {
+    const { title, category, content, image_source, image_url, pdf_url, journalist_name } = req.body;
+    if (!title || !content) {
+        return res.status(400).json({ error: 'Title and content are required' });
+    }
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const newArt = {
+        id: articles.length + 1,
+        slug: `${slug}-${Date.now()}`,
+        title,
+        category: category || 'Local News',
+        content,
+        image_url: image_url || '',
+        image_source: image_source || '',
+        pdf_url: pdf_url || '',
+        views: 0,
+        journalist_name: journalist_name || 'Staff Reporter',
+        pinned_ad: null,
+        created_at: new Date().toISOString()
     };
-    console.log('SSL/TLS transport enabled for secure database connection.');
-}
-
-const pool = mysql.createPool(dbConfig);
-
-// Initialize Database Tables if they do not exist
-async function initializeDatabase() {
-    try {
-        const connection = await pool.getConnection();
-        
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS categories (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(100) NOT NULL UNIQUE
-            )
-        `);
-
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                full_name VARCHAR(150) NOT NULL,
-                username VARCHAR(50) NOT NULL UNIQUE,
-                password VARCHAR(255) NOT NULL,
-                email VARCHAR(150) NOT NULL,
-                whatsapp VARCHAR(20),
-                address TEXT,
-                role ENUM('admin', 'journalist', 'reader') DEFAULT 'reader',
-                status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS articles (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                title VARCHAR(255) NOT NULL,
-                slug VARCHAR(255) NOT NULL UNIQUE,
-                category VARCHAR(100) NOT NULL,
-                content TEXT NOT NULL,
-                image_url TEXT,
-                image_source VARCHAR(150),
-                pdf_url TEXT,
-                journalist_name VARCHAR(150),
-                views INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                pinned_ad_id INT DEFAULT NULL
-            )
-        `);
-
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS comments (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                article_id INT NOT NULL,
-                username VARCHAR(100) NOT NULL,
-                email VARCHAR(150),
-                whatsapp VARCHAR(20),
-                comment TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
-            )
-        `);
-
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS ads (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                business_name VARCHAR(150) NOT NULL,
-                title VARCHAR(200) NOT NULL,
-                type ENUM('banner', 'sidebar', 'sponsored') DEFAULT 'banner',
-                link_url TEXT,
-                media_url TEXT,
-                payment_proof_url TEXT,
-                email VARCHAR(150),
-                whatsapp VARCHAR(20),
-                address TEXT,
-                views INT DEFAULT 0,
-                clicks INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS referrers (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(150) NOT NULL,
-                email VARCHAR(150) NOT NULL,
-                whatsapp VARCHAR(20) NOT NULL,
-                residential_address TEXT NOT NULL,
-                earnings DECIMAL(10,2) DEFAULT 0.00,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-        // Seed default categories if empty
-        const [existingCategories] = await connection.execute('SELECT COUNT(*) as count FROM categories');
-        if (existingCategories[0].count === 0) {
-            const defaultCategories = [
-                'Trending', 'Politics', 'Local News', 'Business', 'Sport', 
-                'Entertainment', 'Opinion', 'Technology', 'Education', 
-                'Crime & Courts', 'Municipal Governance'
-            ];
-            for (const cat of defaultCategories) {
-                await connection.execute('INSERT IGNORE INTO categories (name) VALUES (?)', [cat]);
-            }
-        }
-
-        // Seed default admin user if empty
-        const [existingUsers] = await connection.execute('SELECT COUNT(*) as count FROM users');
-        if (existingUsers[0].count === 0) {
-            await connection.execute(
-                'INSERT INTO users (full_name, username, password, email, whatsapp, address, role, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                ['System Administrator', 'admin', 'admin123', 'admin@solplaatjienews.co.za', '0820000000', 'Kimberley', 'admin', 'approved']
-            );
-        }
-
-        connection.release();
-        console.log('Database tables verified and initialized successfully.');
-    } catch (error) {
-        console.error('Database initialization error:', error.message);
-    }
-}
-
-initializeDatabase();
-
-// ==========================================
-// API ROUTES
-// ==========================================
-
-app.get('/api/categories', async (req, res) => {
-    try {
-        const [rows] = await pool.execute('SELECT name FROM categories');
-        res.json(rows.map(r => r.name));
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    articles.unshift(newArt);
+    res.status(201).json({ message: 'Article published successfully', article: newArt });
 });
 
-app.get('/api/articles', async (req, res) => {
-    try {
-        const { category, search } = req.query;
-        let query = 'SELECT * FROM articles WHERE 1=1';
-        let params = [];
+// 5. Pin Ad to Article
+app.post('/api/articles/:articleId/pin-ad', (req, res) => {
+    const articleId = parseInt(req.params.articleId);
+    const { ad_id } = req.body;
+    const art = articles.find(a => a.id === articleId);
+    const ad = ads.find(ad => ad.id === parseInt(ad_id));
 
-        if (category && category !== 'Trending' && category !== 'All') {
-            query += ' AND category = ?';
-            params.push(category);
-        }
+    if (!art) return res.status(404).json({ error: 'Article not found' });
+    if (!ad) return res.status(404).json({ error: 'Advertisement not found' });
 
-        if (search) {
-            query += ' AND (title LIKE ? OR content LIKE ?)';
-            params.push(`%${search}%`, `%${search}%`);
-        }
-
-        query += ' ORDER BY created_at DESC';
-
-        const [rows] = await pool.execute(query, params);
-        res.json(rows);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    art.pinned_ad = ad;
+    res.json({ message: 'Ad successfully pinned to article', article: art });
 });
 
-app.get('/api/articles/:slug', async (req, res) => {
-    try {
-        const identifier = req.params.slug;
-        let [articles] = await pool.execute('SELECT * FROM articles WHERE slug = ? OR id = ?', [identifier, identifier]);
-        
-        if (articles.length === 0) {
-            const formattedTitle = identifier.replace(/[-_]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-            const fallbackArticle = {
-                id: 9999,
-                title: formattedTitle,
-                slug: identifier,
-                category: 'Local News',
-                content: `Comprehensive coverage and official updates regarding ${formattedTitle}. Serving Kimberley, Galeshewe, Ritchie, and surrounding Northern Cape communities with verified public interest journalism.`,
-                image_url: 'https://images.unsplash.com/photo-1585829365295-ab7cd400c167?auto=format&fit=crop&w=800&q=80',
-                image_source: 'Dikgang tsa Sol Plaatjie Newsroom',
-                pdf_url: '',
-                journalist_name: 'Admin Reporter',
-                views: 1,
-                created_at: new Date().toISOString(),
-                comments: [],
-                pinned_ad: null
-            };
-            return res.json(fallbackArticle);
-        }
-
-        const article = articles[0];
-        await pool.execute('UPDATE articles SET views = views + 1 WHERE id = ?', [article.id]);
-
-        const [comments] = await pool.execute('SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC', [article.id]);
-        
-        let pinnedAd = null;
-        if (article.pinned_ad_id) {
-            const [ads] = await pool.execute('SELECT * FROM ads WHERE id = ?', [article.pinned_ad_id]);
-            if (ads.length > 0) pinnedAd = ads[0];
-        }
-
-        res.json({ ...article, comments, pinned_ad: pinnedAd });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+// 6. Post Comment on Article
+app.post('/api/articles/:articleId/comments', (req, res) => {
+    const articleId = parseInt(req.params.articleId);
+    const { username, email, whatsapp, comment } = req.body;
+    if (!username || !comment) {
+        return res.status(400).json({ error: 'Username and comment are required' });
     }
+    const newComment = {
+        id: comments.length + 1,
+        article_id: articleId,
+        username,
+        email: email || '',
+        whatsapp: whatsapp || '',
+        comment,
+        created_at: new Date().toISOString()
+    };
+    comments.push(newComment);
+    res.status(201).json({ message: 'Comment posted successfully', comment: newComment });
 });
 
-app.post('/api/articles', async (req, res) => {
-    try {
-        const { title, category, content, image_url, image_source, pdf_url, journalist_name } = req.body;
-        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
-
-        const [result] = await pool.execute(
-            'INSERT INTO articles (title, slug, category, content, image_url, image_source, pdf_url, journalist_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [title, slug, category, content, image_url, image_source, pdf_url, journalist_name || 'Admin Reporter']
-        );
-
-        res.status(201).json({ message: 'Article created successfully', articleId: result.insertId, slug });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+// 7. Get Active Ads
+app.get('/api/ads', (req, res) => {
+    const activeAds = ads.filter(ad => ad.status === 'active');
+    res.json(activeAds);
 });
 
-app.post('/api/articles/:id/comments', async (req, res) => {
-    try {
-        const articleId = req.params.id;
-        const { username, email, whatsapp, comment } = req.body;
-
-        await pool.execute(
-            'INSERT INTO comments (article_id, username, email, whatsapp, comment) VALUES (?, ?, ?, ?, ?)',
-            [articleId, username, email, whatsapp, comment]
-        );
-
-        res.status(201).json({ message: 'Comment added successfully' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+// 8. Submit New Ad
+app.post('/api/ads', (req, res) => {
+    const { business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address } = req.body;
+    if (!business_name || !title || !link_url) {
+        return res.status(400).json({ error: 'Required fields missing' });
     }
+    const newAd = {
+        id: ads.length + 1,
+        business_name,
+        title,
+        type: type || 'banner',
+        link_url,
+        media_url: media_url || '',
+        payment_proof_url: payment_proof_url || '',
+        email,
+        whatsapp,
+        address,
+        status: 'active', // Auto-approved for testing convenience
+        views: 0,
+        clicks: 0
+    };
+    ads.push(newAd);
+    res.status(201).json({ message: 'Ad submitted successfully', ad_id: newAd.id });
 });
 
-app.post('/api/articles/:id/pin-ad', async (req, res) => {
-    try {
-        const articleId = req.params.id;
-        const { ad_id } = req.body;
-
-        await pool.execute('UPDATE articles SET pinned_ad_id = ? WHERE id = ?', [ad_id, articleId]);
-        res.json({ message: 'Ad pinned successfully to article' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+// 9. Track Ad View/Click
+app.post('/api/ads/:id/track', (req, res) => {
+    const adId = parseInt(req.params.id);
+    const { action } = req.body; // 'view' or 'click'
+    const ad = ads.find(a => a.id === adId);
+    if (ad) {
+        if (action === 'click') ad.clicks++;
+        else ad.views++;
+        return res.json({ success: true });
     }
+    res.status(404).json({ error: 'Ad not found' });
 });
 
-app.get('/api/ads', async (req, res) => {
-    try {
-        const [rows] = await pool.execute('SELECT * FROM ads ORDER BY created_at DESC');
-        res.json(rows);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+// 10. Referrers / Share & Earn Subscriptions
+app.get('/api/referrers', (req, res) => {
+    res.json(referrers);
 });
 
-app.post('/api/ads', async (req, res) => {
-    try {
-        const { business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address } = req.body;
-
-        const [result] = await pool.execute(
-            'INSERT INTO ads (business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [business_name, title, type || 'banner', link_url, media_url, payment_proof_url, email, whatsapp, address]
-        );
-
-        res.status(201).json({ message: 'Ad submitted successfully', adId: result.insertId });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+app.post('/api/referrers', (req, res) => {
+    const { name, email, whatsapp, residential_address } = req.body;
+    if (!name || !email) {
+        return res.status(400).json({ error: 'Name and email are required' });
     }
+    const existing = referrers.find(r => r.email.toLowerCase() === email.toLowerCase());
+    if (existing) {
+        return res.json({ message: 'Welcome back! You are already subscribed to Share & Earn.', referrer: existing });
+    }
+    const newRef = {
+        id: referrers.length + 1,
+        name,
+        email,
+        whatsapp: whatsapp || '',
+        residential_address: residential_address || '',
+        earnings: '0.00'
+    };
+    referrers.push(newRef);
+    res.status(201).json({ notification: 'Successfully subscribed to Share & Earn!', referrer: newRef });
 });
 
-app.post('/api/ads/:id/track', async (req, res) => {
-    try {
-        const adId = req.params.id;
-        const { action } = req.body;
-
-        if (action === 'click') {
-            await pool.execute('UPDATE ads SET clicks = clicks + 1 WHERE id = ?', [adId]);
-        } else {
-            await pool.execute('UPDATE ads SET views = views + 1 WHERE id = ?', [adId]);
-        }
-
-        res.json({ message: 'Tracking recorded successfully' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+// 11. Authentication: Login
+app.post('/api/auth/login', (req, res) => {
+    const { username, password } = req.body;
+    const user = users.find(u => u.username === username && u.password === password);
+    if (!user) {
+        return res.status(401).json({ error: 'Invalid username or password' });
     }
+    res.json({ message: 'Login successful', user });
 });
 
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { username, password } = req.body;
-        const [users] = await pool.execute('SELECT * FROM users WHERE username = ? AND password = ?', [username, password]);
-
-        if (users.length === 0) {
-            return res.status(401).json({ error: 'Invalid username or password' });
-        }
-
-        const user = users[0];
-        if (user.status !== 'approved') {
-            return res.status(403).json({ error: 'Account pending admin approval' });
-        }
-
-        res.json({ message: 'Login successful', user: { id: user.id, full_name: user.full_name, username: user.username, role: user.role } });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+// 12. Authentication: Register
+app.post('/api/auth/register', (req, res) => {
+    const { full_name, username, password, email, whatsapp, address, role } = req.body;
+    if (!username || !password || !email) {
+        return res.status(400).json({ error: 'Mandatory fields missing' });
     }
+    const existing = users.find(u => u.username === username || u.email === email);
+    if (existing) {
+        return res.status(400).json({ error: 'Username or email already registered' });
+    }
+    const newUser = {
+        id: users.length + 1,
+        username,
+        password,
+        full_name: full_name || username,
+        email,
+        whatsapp: whatsapp || '',
+        address: address || '',
+        role: role || 'journalist',
+        status: 'approved' // Auto-approved for seamless testing
+    };
+    users.push(newUser);
+    res.status(201).json({ message: 'Registration successful! You can now log in.', user: newUser });
 });
 
-app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { full_name, username, password, email, whatsapp, address, role } = req.body;
-
-        const [result] = await pool.execute(
-            'INSERT INTO users (full_name, username, password, email, whatsapp, address, role, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [full_name, username, password, email, whatsapp, address, role || 'journalist', 'pending']
-        );
-
-        res.status(201).json({ message: 'Registration submitted successfully. Awaiting approval.', userId: result.insertId });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+// 13. Admin Dashboard Data
+app.get('/api/admin/dashboard', (req, res) => {
+    res.json({
+        users,
+        articles,
+        ads,
+        referrers
+    });
 });
 
-app.get('/api/referrers', async (req, res) => {
-    try {
-        const [rows] = await pool.execute('SELECT * FROM referrers ORDER BY earnings DESC');
-        res.json(rows);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/referrers', async (req, res) => {
-    try {
-        const { name, email, whatsapp, residential_address } = req.body;
-
-        const [result] = await pool.execute(
-            'INSERT INTO referrers (name, email, whatsapp, residential_address) VALUES (?, ?, ?, ?)',
-            [name, email, whatsapp, residential_address]
-        );
-
-        res.status(201).json({ message: 'Referrer registered successfully', referrerId: result.insertId });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-const PORT = process.env.PORT || 3000;
+// Start Server
 app.listen(PORT, () => {
-    console.log(`Backend server running on port ${PORT}`);
+    console.log(`Dikgang tsa Sol Plaatjie News Agency API server running on port ${PORT}`);
 });
