@@ -8,13 +8,16 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Database Connection Pool configuration (supports MySQL & TiDB)
+// Database Connection Pool configuration updated for TiDB Cloud Security
 const pool = mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
     database: process.env.DB_NAME || 'sol_plaatjie_news',
-    port: process.env.DB_PORT || 3306,
-    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : null,
+    port: process.env.DB_PORT || 4000, // TiDB standard port is often 4000
+    ssl: {
+        rejectUnauthorized: true
+    },
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
