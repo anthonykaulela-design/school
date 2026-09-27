@@ -226,6 +226,39 @@ app.post('/api/articles', async (req, res) => {
     }
 });
 
+// UPDATE endpoint for articles
+app.put('/api/articles/:id', async (req, res) => {
+    try {
+        const articleId = req.params.id;
+        const { title, category, content } = req.body;
+
+        if (!title || !category || !content) {
+            return res.status(400).json({ error: 'Missing required article fields' });
+        }
+
+        const slug = title
+            .toLowerCase()
+            .trim()
+            .replace(/[^\w\s-]/g, '')
+            .replace(/[\s_-]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+
+        const [result] = await pool.query(
+            'UPDATE articles SET title = ?, slug = ?, category = ?, content = ? WHERE id = ?',
+            [title, slug, category, content, articleId]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Article not found' });
+        }
+
+        res.json({ success: true, message: 'Article updated successfully' });
+    } catch (err) {
+        console.error('Error updating article:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // DELETE endpoint for articles
 app.delete('/api/articles/:id', async (req, res) => {
     const articleId = req.params.id;
