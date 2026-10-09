@@ -50,7 +50,7 @@ const pool = mysql.createPool({
 });
 
 // ==========================================
-// DATABASE INITIALIZATION & MIGRATIONS
+// DATABASE INITIALIZATION & SEEDING
 // ==========================================
 async function initDB() {
     try {
@@ -99,7 +99,6 @@ async function initDB() {
             )
         `);
 
-        // Ensure default admin account exists (admin / admin)
         const [adminCheck] = await connection.query('SELECT * FROM users WHERE username = ?', ['admin']);
         if (adminCheck.length === 0) {
             const hashedAdminPass = await bcrypt.hash('admin', 10);
@@ -159,7 +158,7 @@ async function initDB() {
                 email VARCHAR(255) NOT NULL,
                 whatsapp VARCHAR(50) NOT NULL,
                 business_address TEXT NOT NULL,
-                status ENUM('pending', 'active', 'rejected') DEFAULT 'pending',
+                status ENUM('pending', 'active', 'rejected') DEFAULT 'active',
                 views_count INT DEFAULT 0,
                 clicks_count INT DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -187,8 +186,56 @@ async function initDB() {
             )
         `);
 
+        // Seed initial sample articles if table is empty
+        const [articleCount] = await connection.query('SELECT COUNT(*) as count FROM articles');
+        if (articleCount[0].count === 0) {
+            await connection.query(
+                `INSERT INTO articles (title, slug, category, content, image_url, journalist_name, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    'Sol Plaatjie Municipality Announces Emergency Water Pipeline Maintenance in Kimberley',
+                    'sol-plaatjie-emergency-water-maintenance-2026',
+                    'Municipal Governance',
+                    'Sol Plaatjie Technical Services has announced urgent water supply interruptions affecting Kimberley CBD and Galeshewe zones due to main valve replacements near Beaconsfield. Residents are urged to store water accordingly.',
+                    'https://images.unsplash.com/photo-1541888946425-d0fbb18f06f7?auto=format&fit=crop&w=800&q=80',
+                    'Tebogo Kaulela',
+                    'published'
+                ]
+            );
+            await connection.query(
+                `INSERT INTO articles (title, slug, category, content, image_url, journalist_name, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    'Northern Cape High Court Rules on Municipal Electricity Capacity Charges',
+                    'high-court-electricity-capacity-charges-2026',
+                    'Crime & Courts',
+                    'The Northern Cape Division of the High Court in Kimberley delivered a landmark judgment regarding municipal tariff structures and public participation procedures under the Promotion of Administrative Justice Act.',
+                    'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=800&q=80',
+                    'Staff Reporter',
+                    'published'
+                ]
+            );
+        }
+
+        // Seed sample ad if table is empty
+        const [adCount] = await connection.query('SELECT COUNT(*) as count FROM ads');
+        if (adCount[0].count === 0) {
+            await connection.query(
+                `INSERT INTO ads (business_name, title, ad_type, target_link, media_url, email, whatsapp, business_address, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    'Kaulela Enterprise Legal Suite',
+                    'Automated Legal Practice Management & Trust Accounting',
+                    'banner',
+                    'https://github.com',
+                    'https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=600&q=80',
+                    'support@kaulela.co.za',
+                    '0820000000',
+                    'Kimberley, Northern Cape',
+                    'active'
+                ]
+            );
+        }
+
         connection.release();
-        console.log('TiDB Database initialized successfully for Dikgang tsa Sol Plaatjie.');
+        console.log('TiDB Database initialized and seeded successfully.');
     } catch (err) {
         console.error('Database initialization error:', err);
     }
@@ -310,7 +357,6 @@ app.get('/article/:slug', async (req, res) => {
     }
 });
 
-// Handle comment form submissions on standalone article pages
 app.post('/article/:slug/comment', async (req, res) => {
     try {
         const { username, email, whatsapp, comment } = req.body;
@@ -501,9 +547,10 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
+// Fetch active or pending ads so they show immediately
 app.get('/api/ads', async (req, res) => {
     try {
-        const [ads] = await pool.query('SELECT * FROM ads WHERE status = "active" ORDER BY created_at DESC');
+        const [ads] = await pool.query('SELECT * FROM ads WHERE status != "rejected" OR status IS NULL ORDER BY created_at DESC');
         res.json(ads);
     } catch (err) {
         res.status(500).json({ error: 'Internal server error' });
@@ -522,6 +569,7 @@ app.post('/api/ads', async (req, res) => {
 
         res.json({ success: true, message: 'Ad submitted successfully', ad_id: result.insertId });
     } catch (err) {
+        console.error('Error submitting ad:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -592,7 +640,6 @@ app.get('/api/admin/dashboard', async (req, res) => {
 
         res.json({ users, articles, ads });
     } catch (err) {
-        console.error('Error fetching admin dashboard:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
