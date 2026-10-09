@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const PDFDocument = require('pdfkit');
 const cors = require('cors');
+const https = require('https');
 
 const app = express();
 
@@ -208,6 +209,36 @@ async function initDB() {
 }
 
 initDB();
+
+// ==========================================
+// DYNAMIC XML SITEMAP FOR SEARCH CONSOLE
+// ==========================================
+app.get('/sitemap.xml', async (req, res) => {
+    try {
+        const [articles] = await pool.query('SELECT slug, created_at FROM articles ORDER BY created_at DESC');
+        const baseUrl = req.protocol + '://' + req.get('host');
+
+        let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+        xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+        
+        // Homepage
+        xml += `  <url>\n    <loc>${baseUrl}/</loc>\n    <changefreq>hourly</changefreq>\n    <priority>1.0</priority>\n  </url>\n`;
+
+        // Dynamic Article Pages
+        articles.forEach(art => {
+            const date = new Date(art.created_at).toISOString().split('T')[0];
+            xml += `  <url>\n    <loc>${baseUrl}/article/${art.slug}</loc>\n    <lastmod>${date}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>\n`;
+        });
+
+        xml += '</urlset>';
+
+        res.header('Content-Type', 'application/xml');
+        res.send(xml);
+    } catch (err) {
+        console.error('Sitemap error:', err);
+        res.status(500).send('Error generating sitemap');
+    }
+});
 
 // ==========================================
 // STANDALONE SERVER-RENDERED ARTICLE PAGES
@@ -426,6 +457,16 @@ app.post('/api/articles', async (req, res) => {
             [title, slug, category || 'General', content, image_url || null, image_source || null, pdf_url || null, video_embed || null, journalist_id || null, journalist_name || 'Staff Reporter', pinned_ad_id || null]
         );
 
+        // Auto-ping Google Sitemap on new publication
+        try {
+            const sitemapUrl = encodeURIComponent(`https://${req.get('host')}/sitemap.xml`);
+            https.get(`https://www.google.com/ping?sitemap=${sitemapUrl}`, (resp) => {
+                console.log('Google sitemap pinged successfully');
+            });
+        } catch (pingErr) {
+            console.error('Sitemap ping note:', pingErr);
+        }
+
         res.status(201).json({ success: true, message: 'Article created successfully', slug, articleId: result.insertId });
     } catch (err) {
         console.error('Error creating article:', err);
@@ -591,7 +632,7 @@ app.post('/api/subscribers', async (req, res) => {
     }
 });
 
-// Admin Dashboard Endpoints (Supporting both /api/admin/dashboard and /admin/dashboard with safe isolated queries)
+// Admin Dashboard Endpoints
 app.get(['/api/admin/dashboard', '/admin/dashboard'], async (req, res) => {
     try {
         let users = [];
