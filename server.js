@@ -345,7 +345,6 @@ app.post('/article/:slug/comment', async (req, res) => {
 
 app.get('/api/articles', async (req, res) => {
     try {
-        // Relaxed query returning ALL articles in the database without status filters
         let query = 'SELECT * FROM articles WHERE 1=1';
         let params = [];
 
@@ -592,21 +591,44 @@ app.post('/api/subscribers', async (req, res) => {
     }
 });
 
-app.get('/api/admin/dashboard', async (req, res) => {
+// Admin Dashboard Endpoints (Supporting both /api/admin/dashboard and /admin/dashboard with safe isolated queries)
+app.get(['/api/admin/dashboard', '/admin/dashboard'], async (req, res) => {
     try {
-        const [users] = await pool.query('SELECT id, username, full_name, email, whatsapp, role, status FROM users');
-        const [articles] = await pool.query('SELECT * FROM articles ORDER BY created_at DESC');
-        const [rawAds] = await pool.query('SELECT * FROM ads ORDER BY created_at DESC');
+        let users = [];
+        let articles = [];
+        let rawAds = [];
+
+        try {
+            const [u] = await pool.query('SELECT id, username, full_name, email, whatsapp, role, status FROM users');
+            users = u;
+        } catch (e) {
+            console.error('Dashboard users query note:', e.message);
+        }
+
+        try {
+            const [a] = await pool.query('SELECT * FROM articles ORDER BY created_at DESC');
+            articles = a;
+        } catch (e) {
+            console.error('Dashboard articles query note:', e.message);
+        }
+
+        try {
+            const [ad] = await pool.query('SELECT * FROM ads ORDER BY created_at DESC');
+            rawAds = ad;
+        } catch (e) {
+            console.error('Dashboard ads query note:', e.message);
+        }
 
         const ads = rawAds.map(ad => {
-            const totalRevenue = (ad.views_count / 200) * 2;
+            const totalRevenue = ((ad.views_count || 0) / 200) * 2;
             const agencyShare = totalRevenue * 0.5;
             return { ...ad, totalRevenue, agencyShare };
         });
 
         res.json({ users, articles, ads });
     } catch (err) {
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('Dashboard general error:', err);
+        res.status(500).json({ error: 'Internal server error', message: err.message });
     }
 });
 
@@ -623,9 +645,9 @@ app.get('/admin/download-pdf-analytics', async (req, res) => {
         doc.moveDown();
 
         ads.forEach(ad => {
-            const totalCost = (ad.views_count / 200) * 2;
-            doc.fontSize(11).text(`Ad ID: #${ad.id} | Business: ${ad.business_name} | Type: ${ad.ad_type}`);
-            doc.text(`Views: ${ad.views_count} | Clicks: ${ad.clicks_count} | Revenue: R${totalCost.toFixed(2)}`);
+            const totalCost = ((ad.views_count || 0) / 200) * 2;
+            doc.fontSize(11).text(`Ad ID: #${ad.id} | Business: ${ad.business_name || 'N/A'} | Type: ${ad.ad_type || 'banner'}`);
+            doc.text(`Views: ${ad.views_count || 0} | Clicks: ${ad.clicks_count || 0} | Revenue: R${totalCost.toFixed(2)}`);
             doc.text('-----------------------------------------------------------');
         });
 
