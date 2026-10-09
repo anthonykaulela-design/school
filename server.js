@@ -108,7 +108,7 @@ async function initDB() {
             );
         }
 
-        // Ensure table exists
+        // Articles Table & Migrations
         await connection.query(`
             CREATE TABLE IF NOT EXISTS articles (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -123,7 +123,6 @@ async function initDB() {
             )
         `);
 
-        // Safe column additions for pre-existing tables missing columns
         try { await connection.query('ALTER TABLE articles ADD COLUMN category VARCHAR(100)'); } catch (e) {}
         try { await connection.query('ALTER TABLE articles ADD COLUMN image_url LONGTEXT'); } catch (e) {}
         try { await connection.query('ALTER TABLE articles ADD COLUMN image_source VARCHAR(255)'); } catch (e) {}
@@ -137,6 +136,33 @@ async function initDB() {
 
         await connection.query('UPDATE articles SET status = "published" WHERE status IS NULL OR status = ""');
 
+        // Ads Table & Migrations
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS ads (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                business_name VARCHAR(255) NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                target_link TEXT NOT NULL,
+                media_url LONGTEXT NOT NULL,
+                status VARCHAR(50) DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        try { await connection.query('ALTER TABLE ads ADD COLUMN client_id INT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN business_name VARCHAR(255)'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN title VARCHAR(255)'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN ad_type VARCHAR(50) DEFAULT "banner"'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN target_link TEXT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN media_url LONGTEXT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN payment_proof_url LONGTEXT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN email VARCHAR(255)'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN whatsapp VARCHAR(50)'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN business_address TEXT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN status VARCHAR(50) DEFAULT "active"'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN views_count INT DEFAULT 0'); } catch (e) {}
+        try { await connection.query('ALTER TABLE ads ADD COLUMN clicks_count INT DEFAULT 0'); } catch (e) {}
+
         await connection.query(`
             CREATE TABLE IF NOT EXISTS comments (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -147,26 +173,6 @@ async function initDB() {
                 comment TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
-            )
-        `);
-
-        await connection.query(`
-            CREATE TABLE IF NOT EXISTS ads (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                client_id INT,
-                business_name VARCHAR(255) NOT NULL,
-                title VARCHAR(255) NOT NULL,
-                ad_type ENUM('banner', 'interstitial', 'video') DEFAULT 'banner',
-                target_link TEXT NOT NULL,
-                media_url LONGTEXT NOT NULL,
-                payment_proof_url LONGTEXT,
-                email VARCHAR(255) NOT NULL,
-                whatsapp VARCHAR(50) NOT NULL,
-                business_address TEXT NOT NULL,
-                status ENUM('pending', 'active', 'rejected') DEFAULT 'active',
-                views_count INT DEFAULT 0,
-                clicks_count INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
