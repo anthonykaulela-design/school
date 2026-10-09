@@ -50,7 +50,7 @@ const pool = mysql.createPool({
 });
 
 // ==========================================
-// DATABASE INITIALIZATION & SEEDING
+// DATABASE INITIALIZATION & MIGRATIONS
 // ==========================================
 async function initDB() {
     try {
@@ -108,28 +108,33 @@ async function initDB() {
             );
         }
 
+        // Ensure table exists
         await connection.query(`
             CREATE TABLE IF NOT EXISTS articles (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 title VARCHAR(255) NOT NULL,
                 slug VARCHAR(255) UNIQUE NOT NULL,
-                category_id INT,
                 category VARCHAR(100) NOT NULL,
                 content TEXT NOT NULL,
-                image_url LONGTEXT,
-                image_source VARCHAR(255),
-                pdf_url LONGTEXT,
-                video_embed TEXT,
-                journalist_id INT,
                 journalist_name VARCHAR(255) DEFAULT 'Staff Reporter',
                 views INT DEFAULT 0,
-                pinned_ad_id INT DEFAULT NULL,
                 status VARCHAR(50) DEFAULT 'published',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
+        // Safe column additions for pre-existing tables missing columns
+        try { await connection.query('ALTER TABLE articles ADD COLUMN category VARCHAR(100)'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN image_url LONGTEXT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN image_source VARCHAR(255)'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN pdf_url LONGTEXT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN video_embed TEXT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN journalist_id INT'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN journalist_name VARCHAR(255) DEFAULT "Staff Reporter"'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN views INT DEFAULT 0'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles ADD COLUMN pinned_ad_id INT DEFAULT NULL'); } catch (e) {}
         try { await connection.query('ALTER TABLE articles ADD COLUMN status VARCHAR(50) DEFAULT "published"'); } catch (e) {}
+
         await connection.query('UPDATE articles SET status = "published" WHERE status IS NULL OR status = ""');
 
         await connection.query(`
@@ -186,7 +191,7 @@ async function initDB() {
             )
         `);
 
-        // Seed initial sample articles if table is empty
+        // Seed initial sample article if table is empty
         const [articleCount] = await connection.query('SELECT COUNT(*) as count FROM articles');
         if (articleCount[0].count === 0) {
             await connection.query(
@@ -198,18 +203,6 @@ async function initDB() {
                     'Sol Plaatjie Technical Services has announced urgent water supply interruptions affecting Kimberley CBD and Galeshewe zones due to main valve replacements near Beaconsfield. Residents are urged to store water accordingly.',
                     'https://images.unsplash.com/photo-1541888946425-d0fbb18f06f7?auto=format&fit=crop&w=800&q=80',
                     'Tebogo Kaulela',
-                    'published'
-                ]
-            );
-            await connection.query(
-                `INSERT INTO articles (title, slug, category, content, image_url, journalist_name, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    'Northern Cape High Court Rules on Municipal Electricity Capacity Charges',
-                    'high-court-electricity-capacity-charges-2026',
-                    'Crime & Courts',
-                    'The Northern Cape Division of the High Court in Kimberley delivered a landmark judgment regarding municipal tariff structures and public participation procedures under the Promotion of Administrative Justice Act.',
-                    'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=800&q=80',
-                    'Staff Reporter',
                     'published'
                 ]
             );
@@ -235,7 +228,7 @@ async function initDB() {
         }
 
         connection.release();
-        console.log('TiDB Database initialized and seeded successfully.');
+        console.log('TiDB Database initialized and columns verified successfully.');
     } catch (err) {
         console.error('Database initialization error:', err);
     }
@@ -547,7 +540,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// Fetch active or pending ads so they show immediately
 app.get('/api/ads', async (req, res) => {
     try {
         const [ads] = await pool.query('SELECT * FROM ads WHERE status != "rejected" OR status IS NULL ORDER BY created_at DESC');
