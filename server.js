@@ -123,6 +123,10 @@ async function initDB() {
             )
         `);
 
+        // Safely drop restrictive foreign key constraints if they exist
+        try { await connection.query('ALTER TABLE articles DROP FOREIGN KEY fk_2'); } catch (e) {}
+        try { await connection.query('ALTER TABLE articles DROP FOREIGN KEY articles_ibfk_1'); } catch (e) {}
+
         try { await connection.query('ALTER TABLE articles ADD COLUMN category VARCHAR(100)'); } catch (e) {}
         try { await connection.query('ALTER TABLE articles ADD COLUMN image_url LONGTEXT'); } catch (e) {}
         try { await connection.query('ALTER TABLE articles ADD COLUMN image_source VARCHAR(255)'); } catch (e) {}
@@ -456,7 +460,7 @@ app.post('/api/articles', async (req, res) => {
         const [result] = await pool.query(
             `INSERT INTO articles (title, slug, category, content, image_url, image_source, pdf_url, video_embed, journalist_id, journalist_name, pinned_ad_id, status) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published')`,
-            [title, slug, category, content, image_url || null, image_source || null, pdf_url || null, video_embed || null, journalist_id || null, journalist_name || 'Staff Reporter', pinned_ad_id || null]
+            [title, slug, category || 'General', content, image_url || null, image_source || null, pdf_url || null, video_embed || null, journalist_id || null, journalist_name || 'Staff Reporter', pinned_ad_id || null]
         );
 
         res.status(201).json({ success: true, message: 'Article created successfully', slug, articleId: result.insertId });
