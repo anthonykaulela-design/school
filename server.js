@@ -130,7 +130,6 @@ async function initDB() {
             )
         `);
 
-        // Safe column updates & auto-fix for past articles missing status
         try { await connection.query('ALTER TABLE articles ADD COLUMN status VARCHAR(50) DEFAULT "published"'); } catch (e) {}
         await connection.query('UPDATE articles SET status = "published" WHERE status IS NULL OR status = ""');
 
@@ -332,7 +331,6 @@ app.post('/article/:slug/comment', async (req, res) => {
 // REST API ENDPOINTS
 // ==========================================
 
-// Get all articles (Ensures all published articles show up)
 app.get('/api/articles', async (req, res) => {
     try {
         let query = 'SELECT * FROM articles WHERE (status != "rejected" OR status IS NULL)';
@@ -366,7 +364,6 @@ app.get('/api/articles', async (req, res) => {
     }
 });
 
-// Get Categories
 app.get('/api/categories', async (req, res) => {
     try {
         const [rows] = await pool.query('SELECT name FROM categories');
@@ -377,7 +374,6 @@ app.get('/api/categories', async (req, res) => {
     }
 });
 
-// Get Single Article API
 app.get('/api/articles/:slug', async (req, res) => {
     try {
         const [articles] = await pool.query('SELECT * FROM articles WHERE slug = ?', [req.params.slug]);
@@ -401,7 +397,6 @@ app.get('/api/articles/:slug', async (req, res) => {
     }
 });
 
-// Create Article
 app.post('/api/articles', async (req, res) => {
     try {
         let { title, category, content, image_url, image_source, pdf_url, video_embed, journalist_name, journalist_id, pinned_ad_id } = req.body;
@@ -426,7 +421,6 @@ app.post('/api/articles', async (req, res) => {
     }
 });
 
-// Delete Article (Admin)
 app.delete('/api/articles/:id', async (req, res) => {
     try {
         const [result] = await pool.query('DELETE FROM articles WHERE id = ?', [req.params.id]);
@@ -437,7 +431,6 @@ app.delete('/api/articles/:id', async (req, res) => {
     }
 });
 
-// Reject Article Status (Admin)
 app.post('/api/articles/:id/reject', async (req, res) => {
     try {
         await pool.query('UPDATE articles SET status = "rejected" WHERE id = ?', [req.params.id]);
@@ -447,7 +440,6 @@ app.post('/api/articles/:id/reject', async (req, res) => {
     }
 });
 
-// Post Comment API
 app.post('/api/articles/:id/comments', async (req, res) => {
     try {
         const { username, email, whatsapp, comment } = req.body;
@@ -462,7 +454,6 @@ app.post('/api/articles/:id/comments', async (req, res) => {
     }
 });
 
-// Pin Ad to Article
 app.post('/api/articles/:id/pin-ad', async (req, res) => {
     try {
         const { ad_id } = req.body;
@@ -473,7 +464,6 @@ app.post('/api/articles/:id/pin-ad', async (req, res) => {
     }
 });
 
-// Staff Login
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -493,7 +483,6 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Journalist Registration
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { full_name, username, password, email, whatsapp, address, role } = req.body;
@@ -512,7 +501,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// Get Active Ads
 app.get('/api/ads', async (req, res) => {
     try {
         const [ads] = await pool.query('SELECT * FROM ads WHERE status = "active" ORDER BY created_at DESC');
@@ -522,7 +510,6 @@ app.get('/api/ads', async (req, res) => {
     }
 });
 
-// Submit New Ad
 app.post('/api/ads', async (req, res) => {
     try {
         const { business_name, title, type, link_url, media_url, payment_proof_url, email, whatsapp, address, client_id } = req.body;
@@ -539,7 +526,6 @@ app.post('/api/ads', async (req, res) => {
     }
 });
 
-// Track Ad Impressions & Clicks
 app.post('/api/ads/:id/track', async (req, res) => {
     try {
         const { action } = req.body;
@@ -554,7 +540,6 @@ app.post('/api/ads/:id/track', async (req, res) => {
     }
 });
 
-// Get Referrers (Share & Earn)
 app.get('/api/referrers', async (req, res) => {
     try {
         const [referrers] = await pool.query('SELECT * FROM referrers ORDER BY created_at DESC');
@@ -564,7 +549,6 @@ app.get('/api/referrers', async (req, res) => {
     }
 });
 
-// Subscribe to Share & Earn
 app.post('/api/referrers', async (req, res) => {
     try {
         const { name, email, whatsapp, residential_address } = req.body;
@@ -582,7 +566,6 @@ app.post('/api/referrers', async (req, res) => {
     }
 });
 
-// Subscribe to Notifications
 app.post('/api/subscribers', async (req, res) => {
     try {
         const { email, whatsapp } = req.body;
@@ -595,7 +578,6 @@ app.post('/api/subscribers', async (req, res) => {
     }
 });
 
-// Admin Dashboard endpoint
 app.get('/api/admin/dashboard', async (req, res) => {
     try {
         const [users] = await pool.query('SELECT id, username, full_name, email, whatsapp, role, status FROM users');
@@ -610,11 +592,11 @@ app.get('/api/admin/dashboard', async (req, res) => {
 
         res.json({ users, articles, ads });
     } catch (err) {
+        console.error('Error fetching admin dashboard:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-// Download PDF Analytics Report
 app.get('/admin/download-pdf-analytics', async (req, res) => {
     try {
         const [ads] = await pool.query('SELECT * FROM ads');
@@ -625,4 +607,26 @@ app.get('/admin/download-pdf-analytics', async (req, res) => {
         doc.pipe(res);
 
         doc.fontSize(18).text('Dikgang tsa Sol Plaatjie - Ad Analytics Report', { align: 'center' });
-        doc.move
+        doc.moveDown();
+
+        ads.forEach(ad => {
+            const totalCost = (ad.views_count / 200) * 2;
+            doc.fontSize(11).text(`Ad ID: #${ad.id} | Business: ${ad.business_name} | Type: ${ad.ad_type}`);
+            doc.text(`Views: ${ad.views_count} | Clicks: ${ad.clicks_count} | Revenue: R${totalCost.toFixed(2)}`);
+            doc.text('-----------------------------------------------------------');
+        });
+
+        doc.end();
+    } catch (err) {
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ==========================================
+// SERVER LAUNCH
+// ==========================================
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log(`Dikgang tsa Sol Plaatjie Server running on port ${PORT}`);
+});
