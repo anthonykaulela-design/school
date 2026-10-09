@@ -123,7 +123,6 @@ async function initDB() {
             )
         `);
 
-        // Safely drop restrictive foreign key constraints if they exist
         try { await connection.query('ALTER TABLE articles DROP FOREIGN KEY fk_2'); } catch (e) {}
         try { await connection.query('ALTER TABLE articles DROP FOREIGN KEY articles_ibfk_1'); } catch (e) {}
 
@@ -201,42 +200,6 @@ async function initDB() {
             )
         `);
 
-        // Seed initial sample article if table is empty
-        const [articleCount] = await connection.query('SELECT COUNT(*) as count FROM articles');
-        if (articleCount[0].count === 0) {
-            await connection.query(
-                `INSERT INTO articles (title, slug, category, content, image_url, journalist_name, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    'Sol Plaatjie Municipality Announces Emergency Water Pipeline Maintenance in Kimberley',
-                    'sol-plaatjie-emergency-water-maintenance-2026',
-                    'Municipal Governance',
-                    'Sol Plaatjie Technical Services has announced urgent water supply interruptions affecting Kimberley CBD and Galeshewe zones due to main valve replacements near Beaconsfield. Residents are urged to store water accordingly.',
-                    'https://images.unsplash.com/photo-1541888946425-d0fbb18f06f7?auto=format&fit=crop&w=800&q=80',
-                    'Tebogo Kaulela',
-                    'published'
-                ]
-            );
-        }
-
-        // Seed sample ad if table is empty
-        const [adCount] = await connection.query('SELECT COUNT(*) as count FROM ads');
-        if (adCount[0].count === 0) {
-            await connection.query(
-                `INSERT INTO ads (business_name, title, ad_type, target_link, media_url, email, whatsapp, business_address, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    'Kaulela Enterprise Legal Suite',
-                    'Automated Legal Practice Management & Trust Accounting',
-                    'banner',
-                    'https://github.com',
-                    'https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=600&q=80',
-                    'support@kaulela.co.za',
-                    '0820000000',
-                    'Kimberley, Northern Cape',
-                    'active'
-                ]
-            );
-        }
-
         connection.release();
         console.log('TiDB Database initialized and columns verified successfully.');
     } catch (err) {
@@ -286,7 +249,7 @@ app.get('/article/:slug', async (req, res) => {
                     </div>
                 </header>
                 <main class="max-w-4xl mx-auto p-4 sm:p-8 my-6 bg-white rounded-2xl shadow-sm border border-slate-100">
-                    <span class="bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1 rounded-full uppercase">${article.category}</span>
+                    <span class="bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1 rounded-full uppercase">${article.category || 'General'}</span>
                     <h1 class="text-3xl sm:text-4xl font-extrabold text-blue-900 mt-3 mb-3 leading-tight">${article.title}</h1>
                     <div class="text-xs text-slate-500 mb-6 pb-4 border-b flex justify-between items-center">
                         <span>By <strong>${article.journalist_name || 'Staff Reporter'}</strong> | Published: ${new Date(article.created_at).toLocaleString()}</span>
@@ -382,7 +345,8 @@ app.post('/article/:slug/comment', async (req, res) => {
 
 app.get('/api/articles', async (req, res) => {
     try {
-        let query = 'SELECT * FROM articles WHERE (status != "rejected" OR status IS NULL)';
+        // Relaxed query returning ALL articles in the database without status filters
+        let query = 'SELECT * FROM articles WHERE 1=1';
         let params = [];
 
         if (req.query.search) {
