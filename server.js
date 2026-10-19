@@ -25,7 +25,7 @@ const pool = mysql.createPool({
 
 const JWT_SECRET = 'dikgang_sol_plaatjie_secret_key_2026';
 
-// Initialize Database Tables and Default Admin on Startup
+// Initialize Database Tables and Force-Sync Default Admin on Startup
 async function initDB() {
     try {
         const connection = await pool.getConnection();
@@ -120,16 +120,17 @@ async function initDB() {
             await connection.query(`INSERT IGNORE INTO categories (name) VALUES (?)`, [cat]);
         }
 
-        // Seed Default Admin (Username: admin, Password: admin)
-        const [existingAdmin] = await connection.query(`SELECT * FROM users WHERE username = 'admin'`);
-        if (existingAdmin.length === 0) {
-            const hashedPassword = await bcrypt.hash('admin', 10);
-            await connection.query(
-                `INSERT INTO users (username, password, full_name, email, whatsapp, role, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                ['admin', hashedPassword, 'System Administrator', 'admin@dikgang.co.za', '0000000000', 'admin', 'approved']
-            );
-            console.log('Default admin account created: admin / admin');
-        }
+        // FORCE-SYNC Admin Account (Username: admin, Password: admin) on startup
+        const adminHashedPassword = await bcrypt.hash('admin', 10);
+        await connection.query(`
+            INSERT INTO users (username, password, full_name, email, whatsapp, role, status)
+            VALUES ('admin', ?, 'System Administrator', 'admin@dikgang.co.za', '0000000000', 'admin', 'approved')
+            ON DUPLICATE KEY UPDATE 
+            password = VALUES(password),
+            role = 'admin',
+            status = 'approved';
+        `, [adminHashedPassword]);
+        console.log('Admin account successfully synchronized: admin / admin');
 
         connection.release();
         console.log('TiDB Database initialized and verified successfully.');
